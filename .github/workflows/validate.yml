@@ -24,5 +24,7 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          # New custom integrations are not in home-assistant/brands.
-          ignore: brands
+          # brands: new custom integrations are not in home-assistant/brands.
+          # license: the MIT NON-AI license is not an SPDX/OSI-listed license,
+          # which the check requires; HACS does not enforce it for custom repos.
+          ignore: brands,license
