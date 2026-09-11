@@ -225,8 +225,15 @@ class MonthCost:
     peak_fee: float = 0.0
     highload_fee: float = 0.0
     total: float = 0.0
-    projected: float | None = None
+    # Cost so far ÷ kWh so far. Inflated early in the month because the peak
+    # fee is booked in full by the first high hour; converges to the invoice.
     price_per_kwh: float | None = None
+    # Full-month projection: energy scaled to month end, peak charges as they stand.
+    projected: float | None = None
+    projected_kwh: float | None = None
+    projected_price_per_kwh: float | None = None
+    # What the next kWh costs while staying under this month's peaks.
+    marginal_price_per_kwh: float | None = None
 
     @property
     def in_highload_season(self) -> bool:
@@ -416,17 +423,20 @@ def compute_month_cost(
     cost.total = round(
         cost.subscription + cost.transfer + cost.tax + cost.peak_fee + cost.highload_fee, 2
     )
+    cost.marginal_price_per_kwh = round(tariff.transfer_per_kwh + tariff.tax_per_kwh, 4)
     if cost.kwh > 0:
         cost.price_per_kwh = round(cost.total / cost.kwh, 4)
         hours_in_month = days_in_month * 24
-        energy_full = (cost.transfer + cost.tax) * hours_in_month / cost.hours_delivered
+        scale = hours_in_month / cost.hours_delivered
+        cost.projected_kwh = round(cost.kwh * scale, 3)
         cost.projected = round(
             tariff.subscription_per_year * days_in_month / 365
-            + energy_full
+            + (cost.transfer + cost.tax) * scale
             + cost.peak_fee
             + cost.highload_fee,
             2,
         )
+        cost.projected_price_per_kwh = round(cost.projected / cost.projected_kwh, 4)
     return cost
 
 

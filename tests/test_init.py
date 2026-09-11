@@ -135,7 +135,20 @@ async def test_setup_creates_sensors(recorder_mock, hass: HomeAssistant, portal)
     assert cost.attributes["tariff"]["Effektavgift"] == "45,00 kr/kW"
     assert cost.attributes["tariff_complete"] is True
     price_now = hass.states.get("sensor.testgatan_1_teststad_energy_price_this_month")
-    assert float(price_now.state) == pytest.approx(round(total / kwh, 4))
+    scale = 30 * 24 / len(hours)
+    projected_cost = round(
+        4525 * 30 / 365
+        + (round(kwh * 0.372, 2) + round(kwh * 0.45, 2)) * scale
+        + round(peak * 45, 2),
+        2,
+    )
+    projected_kwh = round(kwh * scale, 3)
+    assert float(price_now.state) == pytest.approx(round(projected_cost / projected_kwh, 4))
+    assert price_now.attributes["price_so_far"] == pytest.approx(round(total / kwh, 4))
+    assert price_now.attributes["marginal_price"] == pytest.approx(0.822)
+    assert price_now.attributes["new_peak_cost_per_kw"] == 45.0
+    assert price_now.attributes["new_highload_peak_cost_per_kw"] is None
+    assert price_now.attributes["projected_cost"] == pytest.approx(projected_cost)
     peak_state = hass.states.get("sensor.testgatan_1_teststad_peak_power_this_month")
     assert float(peak_state.state) == pytest.approx(peak)
     assert peak_state.attributes["peak_at"].endswith("23:00:00+00:00")

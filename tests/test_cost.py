@@ -111,6 +111,9 @@ def test_month_cost_matches_invoice_formula() -> None:
     assert cost.total == pytest.approx(cost.subscription + kwh * 0.822 + 537.66, abs=0.05)
     assert cost.projected == pytest.approx(cost.total, abs=0.05)  # month complete
     assert cost.price_per_kwh == pytest.approx(cost.total / kwh, abs=1e-4)
+    assert cost.projected_kwh == pytest.approx(kwh)
+    assert cost.projected_price_per_kwh == pytest.approx(cost.price_per_kwh, abs=1e-4)
+    assert cost.marginal_price_per_kwh == pytest.approx(0.822)
 
 
 def test_month_cost_highload_excludes_weekends_nights_and_holidays() -> None:
@@ -131,6 +134,10 @@ def test_month_cost_highload_excludes_weekends_nights_and_holidays() -> None:
     assert cost.peak_fee == pytest.approx(9.0 * 45)
     assert cost.days_elapsed == 10
     assert cost.projected is not None and cost.projected > cost.total
+    # Early in the month the so-far price is inflated by the peak fees; the
+    # projected price spreads them over the whole month.
+    assert cost.projected_price_per_kwh is not None and cost.price_per_kwh is not None
+    assert cost.projected_price_per_kwh < cost.price_per_kwh
 
 
 def test_month_cost_without_tariff_still_reports_peaks() -> None:

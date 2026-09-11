@@ -62,7 +62,7 @@ One *service* device for the account and one device per use place (address).
 | `sensor.<address>_energy_this_year` | Year to date |
 | `sensor.<address>_energy_last_year_same_period` | Same period last year (disabled by default) |
 | `sensor.<address>_meter_reading` | Latest meter stand in kWh (`total_increasing`), usually monthly |
-| `sensor.<address>_energy_price_this_month` | Live estimate in SEK/kWh for the current month: grid cost so far ÷ kWh so far. Cost breakdown and the tariff as attributes. |
+| `sensor.<address>_energy_price_this_month` | Projected SEK/kWh for the current month: projected month cost ÷ projected month kWh, which is what the invoice will show. Attributes: `price_so_far` (cost so far ÷ kWh so far, inflated early in the month by the peak fee), `marginal_price` (the next kWh while staying under this month's peaks), and the cost per kW of setting a new peak. |
 | `sensor.<address>_grid_cost_this_month` | Grid cost so far this month in SEK, computed like the invoice (see below) |
 | `sensor.<address>_projected_grid_cost_this_month` | Full-month projection: energy scaled to month end, peak charges as they stand |
 | `sensor.<address>_peak_power_this_month` | Highest hourly average power this month in kW, with `peak_at`. Drives the peak fee. |

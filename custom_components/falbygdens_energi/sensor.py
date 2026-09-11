@@ -124,6 +124,28 @@ def _month_cost_attrs(site: SiteData) -> dict[str, Any]:
     }
 
 
+def _price_attrs(site: SiteData) -> dict[str, Any]:
+    mc = site.month_cost
+    if mc is None:
+        return {}
+    return {
+        "month": mc.month.strftime("%Y-%m"),
+        "basis": "projected month cost ÷ projected month energy",
+        "price_so_far": mc.price_per_kwh,
+        "marginal_price": mc.marginal_price_per_kwh,
+        "new_peak_cost_per_kw": site.tariff.peak_per_kw if site.tariff else None,
+        "new_highload_peak_cost_per_kw": (
+            site.tariff.highload_per_kw if site.tariff and mc.in_highload_season else None
+        ),
+        "projected_cost": mc.projected,
+        "projected_energy": mc.projected_kwh,
+        "cost_so_far": mc.total,
+        "energy_so_far": mc.kwh,
+        "peak_kw": mc.peak_kw,
+        "days_elapsed": mc.days_elapsed,
+    }
+
+
 def _peak_attrs(site: SiteData) -> dict[str, Any]:
     mc = site.month_cost
     return {"peak_at": mc.peak_at.isoformat() if mc and mc.peak_at else None}
@@ -225,8 +247,8 @@ SITE_SENSORS: tuple[SiteSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:cash-clock",
         suggested_display_precision=2,
-        value_fn=lambda s: s.month_cost.price_per_kwh if s.month_cost else None,
-        attributes_fn=_month_cost_attrs,
+        value_fn=lambda s: s.month_cost.projected_price_per_kwh if s.month_cost else None,
+        attributes_fn=_price_attrs,
     ),
     SiteSensorDescription(
         key="grid_cost_month",
