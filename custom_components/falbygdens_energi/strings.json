@@ -1,0 +1,74 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Falbygdens Energi – Mina sidor",
+        "description": "Sign in with the user name and password you use at minasidor.falbygdensenergi.se. BankID and Freja logins are not supported, and the account must not have two-factor authentication enabled.",
+        "data": {
+          "username": "[%key:common::config_flow::data::username%]",
+          "password": "[%key:common::config_flow::data::password%]"
+        }
+      },
+      "reauth_confirm": {
+        "title": "[%key:common::config_flow::title::reauth%]",
+        "description": "The password for {username} no longer works. Enter the new one.",
+        "data": {
+          "password": "[%key:common::config_flow::data::password%]"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
+      "account_locked": "The portal reports that this account is locked.",
+      "two_factor": "This account requires a two-factor code. Disable two-factor authentication on the portal, or create a sub-user without it, and try again.",
+      "captcha": "The portal currently requires a captcha at login, which cannot be automated.",
+      "password_login_disabled": "The portal only allows BankID or Freja login right now.",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_account%]",
+      "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "energy_today": {
+        "name": "Energy today"
+      },
+      "energy_yesterday": {
+        "name": "Energy yesterday"
+      },
+      "energy_month": {
+        "name": "Energy this month"
+      },
+      "energy_year": {
+        "name": "Energy this year"
+      },
+      "energy_last_year": {
+        "name": "Energy last year, same period"
+      },
+      "meter_reading": {
+        "name": "Meter reading"
+      },
+      "data_up_to": {
+        "name": "Data up to"
+      },
+      "unpaid_amount": {
+        "name": "Unpaid invoices"
+      },
+      "latest_invoice": {
+        "name": "Latest invoice"
+      },
+      "next_due_date": {
+        "name": "Next due date"
+      },
+      "last_update": {
+        "name": "Last update"
+      },
+      "portal_version": {
+        "name": "Portal version"
+      }
+    }
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Falbygdens Energi – Mina sidor",
+        "description": "Logga in med det användarnamn och lösenord du använder på minasidor.falbygdensenergi.se. BankID- och Freja-inloggning stöds inte, och kontot får inte ha tvåfaktorsautentisering aktiverad.",
+        "data": {
+          "username": "Användarnamn",
+          "password": "Lösenord"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Autentisera igen",
+        "description": "Lösenordet för {username} fungerar inte längre. Ange det nya.",
+        "data": {
+          "password": "Lösenord"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Det gick inte att ansluta",
+      "invalid_auth": "Fel användarnamn eller lösenord",
+      "account_locked": "Portalen rapporterar att kontot är låst.",
+      "two_factor": "Kontot kräver en engångskod. Stäng av tvåfaktorsautentisering på portalen, eller skapa en underanvändare utan den, och försök igen.",
+      "captcha": "Portalen kräver just nu en captcha vid inloggning, vilket inte kan automatiseras.",
+      "password_login_disabled": "Portalen tillåter just nu bara inloggning med BankID eller Freja.",
+      "unknown": "Oväntat fel"
+    },
+    "abort": {
+      "already_configured": "Kontot är redan konfigurerat",
+      "reauth_successful": "Autentiseringen lyckades"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "energy_today": {
+        "name": "Energi idag"
+      },
+      "energy_yesterday": {
+        "name": "Energi igår"
+      },
+      "energy_month": {
+        "name": "Energi denna månad"
+      },
+      "energy_year": {
+        "name": "Energi i år"
+      },
+      "energy_last_year": {
+        "name": "Energi förra året, samma period"
+      },
+      "meter_reading": {
+        "name": "Mätarställning"
+      },
+      "data_up_to": {
+        "name": "Data fram till"
+      },
+      "unpaid_amount": {
+        "name": "Obetalda fakturor"
+      },
+      "latest_invoice": {
+        "name": "Senaste faktura"
+      },
+      "next_due_date": {
+        "name": "Nästa förfallodag"
+      },
+      "last_update": {
+        "name": "Senaste uppdatering"
+      },
+      "portal_version": {
+        "name": "Portalversion"
+      }
+    }
+  }
+}

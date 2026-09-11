@@ -1,0 +1,18 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  version:
+    name: Check manifest version matches tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare versions
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          MANIFEST=$(python3 -c "import json;print(json.load(open('custom_components/falbygdens_energi/manifest.json'))['version'])")
+          echo "tag=$TAG manifest=$MANIFEST"
+          test "$TAG" = "$MANIFEST"

@@ -1,0 +1,20 @@
+{
+  "domain": "falbygdens_energi",
+  "name": "Falbygdens Energi",
+  "codeowners": [
+    "@kennedyshead"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "recorder"
+  ],
+  "documentation": "https://github.com/kennedyshead/HA-Falbygdensenergi",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/kennedyshead/HA-Falbygdensenergi/issues",
+  "loggers": [
+    "custom_components.falbygdens_energi"
+  ],
+  "requirements": [],
+  "version": "0.1.0"
+}
