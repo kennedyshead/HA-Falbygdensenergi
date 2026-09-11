@@ -144,6 +144,24 @@ async def test_setup_creates_sensors(recorder_mock, hass: HomeAssistant, portal)
     )
     projected = hass.states.get("sensor.testgatan_1_teststad_projected_grid_cost_this_month")
     assert float(projected.state) > total
+
+    # Tariff period: September is outside the high-load season.
+    period = hass.states.get("sensor.testgatan_1_teststad_tariff_period")
+    assert period.state == "normal"
+    assert period.attributes["high_load_season"] is False
+    assert period.attributes["energy_price"] == pytest.approx(0.822)
+    assert len(period.attributes["today"]) == 24
+    assert all(h["period"] == "normal" for h in period.attributes["today"])
+    assert period.attributes["next_change"].startswith(
+        "2026-11-02T07:00:00"
+    )  # first weekday in Nov
+    # Heaviest hour: fake values grow with the UTC hour, so 23:00 UTC = 01:00 local.
+    heaviest = hass.states.get("sensor.testgatan_1_teststad_heaviest_hour_of_day")
+    assert heaviest.state == "01:00"
+    assert heaviest.attributes["heaviest_hours"] == ["01:00", "00:00", "23:00"]
+    assert heaviest.attributes["lightest_hours"][0] == "02:00"
+    assert heaviest.attributes["average"]["01:00"] == pytest.approx(1.23)
+    assert heaviest.attributes["days"] == 30
     assert hass.states.get("sensor.testgatan_1_teststad_energy_this_year").state == "9009.0"
     up_to = hass.states.get("sensor.testgatan_1_teststad_data_up_to")
     assert up_to.state == "2026-09-11T07:00:00+00:00"
@@ -178,8 +196,8 @@ async def test_refresh_reuses_sum_and_short_window(
 
     hourly = [m for m in fake.consumption_requests if m["Interval"] == "HOUR"]
     assert len(hourly) == 2
-    # 3-day refresh window, widened to the start of the month for the cost estimate.
-    assert hourly[1]["StartDate"] == "2026-09-01"
+    # Hourly history is always 30 days (profile); only the statistics import narrows.
+    assert hourly[1]["StartDate"] == "2026-08-12"
     second = await get_instance(hass).async_add_executor_job(
         get_last_statistics, hass, 1, "falbygdens_energi:55782955_energy", True, {"sum"}
     )

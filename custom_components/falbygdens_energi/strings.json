@@ -86,6 +86,16 @@
       },
       "energy_price_invoiced": {
         "name": "Energy price last invoice"
+      },
+      "tariff_period": {
+        "name": "Tariff period",
+        "state": {
+          "normal": "Normal",
+          "high_load": "High load"
+        }
+      },
+      "heaviest_hour": {
+        "name": "Heaviest hour of day"
       }
     }
   }

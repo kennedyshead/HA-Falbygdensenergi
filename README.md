@@ -67,6 +67,8 @@ One *service* device for the account and one device per use place (address).
 | `sensor.<address>_projected_grid_cost_this_month` | Full-month projection: energy scaled to month end, peak charges as they stand |
 | `sensor.<address>_peak_power_this_month` | Highest hourly average power this month in kW, with `peak_at`. Drives the peak fee. |
 | `sensor.<address>_high_load_peak_this_month` | Highest weekday 07–19 hour November–March in kW. Drives the high-load fee; `unknown` outside the season. |
+| `sensor.<address>_tariff_period` | `normal` or `high_load` right now. Attributes: `today` and `tomorrow` hour lists with period and fees (plot them with ApexCharts), `next_change`. |
+| `sensor.<address>_heaviest_hour_of_day` | Hour of day with the highest average consumption over the last 30 days. Attributes: `average` and `maximum` kWh per hour, `heaviest_hours`, `lightest_hours`. |
 | `sensor.<address>_energy_price_last_invoice` | Settled SEK/kWh of the newest invoice: amount ÷ kWh of the month it covers. `history` attribute lists every invoice with period, kWh, amount and price. |
 | `sensor.<address>_data_up_to` | Start of the last hour the portal has delivered (diagnostic) |
 
@@ -79,6 +81,16 @@ One *service* device for the account and one device per use place (address).
 | `sensor.<account>_next_due_date` | Earliest due date among unpaid invoices |
 | `sensor.<account>_last_update` | Timestamp of the last successful poll (diagnostic) |
 | `sensor.<account>_portal_version` | Portal build number, disabled by default (diagnostic) |
+
+### Cheap and expensive hours
+
+The grid price per kWh is the same all day. What makes an hour expensive is
+the peak charges: November–March, any weekday hour 07:00–19:00 can set the
+high-load peak (65 kr/kW), and in every month the single highest hour sets
+the peak fee (45 kr/kW). The *Tariff period* sensor marks those hours, and
+the *Heaviest hour of day* profile shows when you actually load the grid,
+which is where shifting consumption pays off. Hourly spot prices come from
+your electricity supplier's integration, not from the grid company.
 
 ### How the grid cost is computed
 

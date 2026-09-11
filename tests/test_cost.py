@@ -15,7 +15,13 @@ from custom_components.falbygdens_energi.api import (
     parse_price,
     parse_tariff,
 )
-from custom_components.falbygdens_energi.coordinator import compute_month_cost
+from custom_components.falbygdens_energi.coordinator import (
+    compute_hourly_profile,
+    compute_month_cost,
+    is_high_load_hour,
+    next_period_change,
+    tariff_schedule,
+)
 
 STOCKHOLM = ZoneInfo("Europe/Stockholm")
 TARIFF = Tariff(
@@ -144,3 +150,71 @@ def test_month_cost_respects_cutoff_and_ignores_previous_month() -> None:
     cost = compute_month_cost(_points(start, values), TARIFF, now, cutoff=cutoff)
     assert cost is not None
     assert cost.hours_delivered == 2 and cost.kwh == 2.0 and cost.peak_kw == 1.0
+
+
+@pytest.mark.parametrize(
+    ("when", "expected"),
+    [
+        (datetime(2026, 1, 7, 8, tzinfo=STOCKHOLM), True),  # Wednesday morning in January
+        (datetime(2026, 1, 7, 19, tzinfo=STOCKHOLM), False),  # window ends at 19:00
+        (datetime(2026, 1, 7, 6, 59, tzinfo=STOCKHOLM), False),
+        (datetime(2026, 1, 10, 12, tzinfo=STOCKHOLM), False),  # Saturday
+        (datetime(2026, 1, 6, 12, tzinfo=STOCKHOLM), False),  # Epiphany (Tuesday)
+        (datetime(2025, 12, 24, 12, tzinfo=STOCKHOLM), False),  # Christmas Eve (Wednesday)
+        (datetime(2026, 3, 31, 12, tzinfo=STOCKHOLM), True),  # last day of the season
+        (datetime(2026, 4, 1, 12, tzinfo=STOCKHOLM), False),
+        (datetime(2026, 9, 11, 12, tzinfo=STOCKHOLM), False),
+    ],
+)
+def test_is_high_load_hour(when: datetime, expected: bool) -> None:
+    assert is_high_load_hour(when) is expected
+
+
+def test_tariff_schedule_marks_high_load_hours_and_dst() -> None:
+    day = tariff_schedule(datetime(2026, 1, 7).date(), TARIFF)
+    assert len(day) == 24
+    assert [h.start.hour for h in day] == list(range(24))
+    assert [h.high_load for h in day] == [7 <= hour < 19 for hour in range(24)]
+    assert day[8].highload_fee_per_kw == 65.0 and day[3].highload_fee_per_kw == 0.0
+    assert day[8].energy_price == pytest.approx(0.822)
+    # DST change day (29 March 2026) has 23 hours; it is a Sunday so no high load.
+    dst = tariff_schedule(datetime(2026, 3, 29).date(), TARIFF)
+    assert len(dst) == 23 and not any(h.high_load for h in dst)
+    # Without a tariff the schedule still knows the periods.
+    assert tariff_schedule(datetime(2026, 1, 7).date(), None)[8].energy_price is None
+
+
+def test_next_period_change() -> None:
+    # Friday 30 Jan 2026 at 18:30 -> window closes at 19:00.
+    assert next_period_change(datetime(2026, 1, 30, 18, 30, tzinfo=STOCKHOLM)) == datetime(
+        2026, 1, 30, 19, tzinfo=STOCKHOLM
+    )
+    # Friday evening -> next high load is Monday 07:00.
+    assert next_period_change(datetime(2026, 1, 30, 20, tzinfo=STOCKHOLM)) == datetime(
+        2026, 2, 2, 7, tzinfo=STOCKHOLM
+    )
+    # In summer -> first weekday morning of November.
+    assert next_period_change(datetime(2026, 7, 1, tzinfo=STOCKHOLM)) == datetime(
+        2026, 11, 2, 7, tzinfo=STOCKHOLM
+    )
+
+
+def test_hourly_profile_averages_per_local_hour() -> None:
+    start = datetime(2026, 8, 1, tzinfo=STOCKHOLM)
+    values = [float(i % 24) for i in range(3 * 24)]  # value == local hour, three days
+    values[2 * 24 + 5] = 20.0  # one spike at 05:00 on day three
+    now = start + timedelta(days=3)
+    profile = compute_hourly_profile(
+        _points(start, values), now.astimezone(UTC), cutoff=None, days=30
+    )
+    assert profile is not None
+    assert profile.average[3] == 3.0
+    assert profile.average[5] == pytest.approx((5 + 5 + 20) / 3)
+    assert profile.maximum[5] == 20.0
+    assert profile.heaviest_hours == [23, 22, 21]
+    assert profile.lightest_hours == [0, 1, 2]
+    assert profile.heaviest_hour == 23
+    # Cutoff drops undelivered hours; too-old points are ignored.
+    older = compute_hourly_profile(_points(start, values), now.astimezone(UTC), cutoff=None, days=1)
+    assert older is not None and older.average[5] == 20.0
+    assert compute_hourly_profile([], now.astimezone(UTC), cutoff=None, days=30) is None

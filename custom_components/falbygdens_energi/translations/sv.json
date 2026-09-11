@@ -86,6 +86,16 @@
       },
       "energy_price_invoiced": {
         "name": "Energipris senaste faktura"
+      },
+      "tariff_period": {
+        "name": "Tariffperiod",
+        "state": {
+          "normal": "Normal",
+          "high_load": "Höglast"
+        }
+      },
+      "heaviest_hour": {
+        "name": "Tyngsta timme på dagen"
       }
     }
   }

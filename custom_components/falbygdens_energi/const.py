@@ -27,8 +27,11 @@ ATTR_LAST_READING = "last_reading"
 # How far back hourly values are fetched the first time a meter is seen
 # (one request; the portal handled 40 days / 960 points fine).
 STATISTICS_BACKFILL_DAYS = 30
-# Re-fetched every refresh so late-delivered hours overwrite earlier zeros.
+# Re-imported into statistics every refresh so late-delivered hours overwrite
+# earlier zeros.
 STATISTICS_REFRESH_DAYS = 3
+# Hourly history always fetched, for the hour-of-day consumption profile.
+PROFILE_DAYS = 30
 
 ATTR_SITE_ID = "site_id"
 ATTR_SERVICE_ID = "service_id"

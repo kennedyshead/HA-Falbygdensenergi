@@ -5,7 +5,7 @@ from __future__ import annotations
 import calendar
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
@@ -38,6 +38,7 @@ from .api import (
 from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    PROFILE_DAYS,
     STATISTICS_BACKFILL_DAYS,
     STATISTICS_REFRESH_DAYS,
 )
@@ -70,6 +71,111 @@ def _swedish_holidays(year: int) -> set[date]:
         )
     days.update({date(year, 12, 24), date(year, 12, 31)})
     return days
+
+
+def is_high_load_hour(local: datetime, holidays_: set[date] | None = None) -> bool:
+    """True when ``local`` falls in the high-load window (Nov–Mar, weekdays 07–19)."""
+    if local.month not in HIGHLOAD_MONTHS or local.weekday() >= 5:
+        return False
+    if local.hour not in HIGHLOAD_HOURS:
+        return False
+    days = holidays_ if holidays_ is not None else _swedish_holidays(local.year)
+    return local.date() not in days
+
+
+@dataclass(slots=True)
+class TariffHour:
+    """One hour of the tariff schedule."""
+
+    start: datetime
+    high_load: bool
+    energy_price: float | None  # SEK/kWh, transfer + tax
+    peak_fee_per_kw: float | None
+    highload_fee_per_kw: float  # 0 outside the high-load window
+
+
+def tariff_schedule(day: date, tariff: Tariff | None) -> list[TariffHour]:
+    """The 24 (or 23/25 on DST days) hours of ``day`` with their tariff period."""
+    start = dt_util.start_of_local_day(
+        datetime.combine(day, datetime.min.time(), tzinfo=dt_util.get_default_time_zone())
+    )
+    end = dt_util.start_of_local_day(start + timedelta(days=1, hours=2))
+    holidays_ = _swedish_holidays(day.year)
+    energy = (
+        round(tariff.transfer_per_kwh + tariff.tax_per_kwh, 4)
+        if tariff and tariff.transfer_per_kwh is not None and tariff.tax_per_kwh is not None
+        else None
+    )
+    hours: list[TariffHour] = []
+    cur = start
+    while cur < end:
+        high = is_high_load_hour(cur, holidays_)
+        hours.append(
+            TariffHour(
+                start=cur,
+                high_load=high,
+                energy_price=energy,
+                peak_fee_per_kw=tariff.peak_per_kw if tariff else None,
+                highload_fee_per_kw=(tariff.highload_per_kw or 0.0) if (tariff and high) else 0.0,
+            )
+        )
+        cur = dt_util.as_local((cur + timedelta(hours=1)).astimezone(UTC))
+    return hours
+
+
+def next_period_change(now_local: datetime) -> datetime | None:
+    """When the tariff period next flips between normal and high load (within 400 days)."""
+    current = is_high_load_hour(now_local)
+    probe = now_local.replace(minute=0, second=0, microsecond=0)
+    for _ in range(400 * 24):
+        probe = dt_util.as_local((probe + timedelta(hours=1)).astimezone(UTC))
+        if is_high_load_hour(probe) != current:
+            return probe
+    return None
+
+
+@dataclass(slots=True)
+class HourlyProfile:
+    """Average consumption per hour of the day over the last weeks."""
+
+    days: int
+    average: list[float]  # index = local hour 0..23, kWh
+    maximum: list[float]
+    heaviest_hours: list[int]  # hours of day, heaviest first
+    lightest_hours: list[int]  # lightest first
+
+    @property
+    def heaviest_hour(self) -> int | None:
+        """Hour of day with the highest average consumption."""
+        return self.heaviest_hours[0] if self.heaviest_hours else None
+
+
+def compute_hourly_profile(
+    points: list[ConsumptionPoint], now_utc: datetime, *, cutoff: datetime | None, days: int
+) -> HourlyProfile | None:
+    """Average and max kWh per local hour of day over the last ``days`` days."""
+    since = now_utc - timedelta(days=days)
+    sums = [0.0] * 24
+    counts = [0] * 24
+    maxima = [0.0] * 24
+    for p in points:
+        if p.start < since or (cutoff is not None and p.start > cutoff) or p.start.minute != 0:
+            continue
+        hour = dt_util.as_local(p.start).hour
+        sums[hour] += p.value
+        counts[hour] += 1
+        maxima[hour] = max(maxima[hour], p.value)
+    if not any(counts):
+        return None
+    average = [round(sums[h] / counts[h], 3) if counts[h] else 0.0 for h in range(24)]
+    order = sorted(range(24), key=lambda h: average[h], reverse=True)
+    return HourlyProfile(
+        days=days,
+        average=average,
+        maximum=[round(m, 3) for m in maxima],
+        heaviest_hours=order[:3],
+        lightest_hours=list(reversed(order))[:3],
+    )
 
 
 @dataclass(slots=True)
@@ -133,6 +239,9 @@ class SiteData:
     invoiced: list[InvoicePrice] = field(default_factory=list)
     tariff: Tariff | None = None
     month_cost: MonthCost | None = None
+    profile: HourlyProfile | None = None
+    # Hourly points that should go into long-term statistics this refresh.
+    statistics_points: list[ConsumptionPoint] = field(default_factory=list)
 
     @property
     def last_invoiced(self) -> InvoicePrice | None:
@@ -362,9 +471,12 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
         now_local = dt_util.now()
         today = now_local.date()
         first_run = self._statistic_id(site) not in self._statistics_imported
-        days = STATISTICS_BACKFILL_DAYS if first_run else STATISTICS_REFRESH_DAYS
-        # Always cover the whole current month so the month cost can be computed.
-        hourly_start = min(today - timedelta(days=days), today.replace(day=1))
+        # Whole month for the cost estimate, PROFILE_DAYS for the hour-of-day
+        # profile (and the first statistics backfill); one request either way.
+        hourly_start = min(
+            today - timedelta(days=max(PROFILE_DAYS, STATISTICS_BACKFILL_DAYS)),
+            today.replace(day=1),
+        )
 
         hourly = await self.client.async_get_consumption(
             model, site, hourly_start, today, Interval.HOUR
@@ -383,6 +495,13 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
         data.month_cost = compute_month_cost(
             hourly.points, tariff, now_local, cutoff=data.last_hour_start
         )
+        data.profile = compute_hourly_profile(
+            hourly.points, dt_util.utcnow(), cutoff=data.last_hour_start, days=PROFILE_DAYS
+        )
+        stats_since = dt_util.utcnow() - timedelta(
+            days=STATISTICS_BACKFILL_DAYS if first_run else STATISTICS_REFRESH_DAYS
+        )
+        data.statistics_points = [p for p in hourly.points if p.start >= stats_since]
 
         # Month to date from the monthly series (covers the whole month even
         # if the hourly window is shorter), year to date from CompareModel.
@@ -503,14 +622,14 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
         Rows are keyed by hour start, so re-importing the last days each
         refresh silently corrects values the portal delivered late.
         """
-        if not site_data.hourly:
+        if not site_data.statistics_points:
             return
         statistic_id = self._statistic_id(site_data.site)
         # Skip hours the portal has not delivered yet (it reports them as 0).
         cutoff = site_data.last_hour_start
         points = [
             p
-            for p in site_data.hourly
+            for p in site_data.statistics_points
             if p.start.minute == 0 and (cutoff is None or p.start <= cutoff)
         ]
         if not points:

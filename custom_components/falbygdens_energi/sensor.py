@@ -40,6 +40,9 @@ from .coordinator import (
     FalbygdensEnergiCoordinator,
     PortalData,
     SiteData,
+    is_high_load_hour,
+    next_period_change,
+    tariff_schedule,
 )
 
 CURRENCY_SEK = "SEK"
@@ -57,7 +60,7 @@ class AccountSensorDescription(SensorEntityDescription):
 class SiteSensorDescription(SensorEntityDescription):
     """A sensor derived from one site's data."""
 
-    value_fn: Callable[[SiteData], float | datetime | None]
+    value_fn: Callable[[SiteData], float | datetime | str | None]
     last_reset_fn: Callable[[SiteData], datetime | None] | None = None
     attributes_fn: Callable[[SiteData], dict[str, Any]] | None = None
 
@@ -134,11 +137,82 @@ def _highload_attrs(site: SiteData) -> dict[str, Any]:
     }
 
 
+def _schedule_attr(site: SiteData, day: date) -> list[dict[str, Any]]:
+    return [
+        {
+            "start": h.start.isoformat(),
+            "end": (h.start + timedelta(hours=1)).isoformat(),
+            "period": "high_load" if h.high_load else "normal",
+            "energy_price": h.energy_price,
+            "peak_fee_per_kw": h.peak_fee_per_kw,
+            "highload_fee_per_kw": h.highload_fee_per_kw,
+        }
+        for h in tariff_schedule(day, site.tariff)
+    ]
+
+
+def _tariff_period_attrs(site: SiteData) -> dict[str, Any]:
+    now = dt_util.now()
+    today = now.date()
+    change = next_period_change(now)
+    t = site.tariff
+    return {
+        "high_load_season": now.month in (11, 12, 1, 2, 3),
+        "high_load_window": "November–March, Monday–Friday 07:00–19:00, holidays excluded",
+        "next_change": change.isoformat() if change else None,
+        "energy_price": (
+            round(t.transfer_per_kwh + t.tax_per_kwh, 4)
+            if t and t.transfer_per_kwh is not None and t.tax_per_kwh is not None
+            else None
+        ),
+        "peak_fee_per_kw": t.peak_per_kw if t else None,
+        "highload_fee_per_kw": t.highload_per_kw if t else None,
+        "today": _schedule_attr(site, today),
+        "tomorrow": _schedule_attr(site, today + timedelta(days=1)),
+    }
+
+
+def _profile_attrs(site: SiteData) -> dict[str, Any]:
+    pr = site.profile
+    if pr is None:
+        return {}
+    return {
+        "days": pr.days,
+        "average": {f"{h:02d}:00": pr.average[h] for h in range(24)},
+        "maximum": {f"{h:02d}:00": pr.maximum[h] for h in range(24)},
+        "heaviest_hours": [f"{h:02d}:00" for h in pr.heaviest_hours],
+        "lightest_hours": [f"{h:02d}:00" for h in pr.lightest_hours],
+    }
+
+
+def _heaviest_hour_label(site: SiteData) -> str | None:
+    pr = site.profile
+    if pr is None or pr.heaviest_hour is None:
+        return None
+    return f"{pr.heaviest_hour:02d}:00"
+
+
 def _start_of_month_cost(_: SiteData) -> datetime:
     return dt_util.start_of_local_day().replace(day=1)
 
 
 SITE_SENSORS: tuple[SiteSensorDescription, ...] = (
+    SiteSensorDescription(
+        key="tariff_period",
+        translation_key="tariff_period",
+        device_class=SensorDeviceClass.ENUM,
+        options=["normal", "high_load"],
+        icon="mdi:clock-alert-outline",
+        value_fn=lambda s: "high_load" if is_high_load_hour(dt_util.now()) else "normal",
+        attributes_fn=_tariff_period_attrs,
+    ),
+    SiteSensorDescription(
+        key="heaviest_hour",
+        translation_key="heaviest_hour",
+        icon="mdi:chart-bar",
+        value_fn=_heaviest_hour_label,
+        attributes_fn=_profile_attrs,
+    ),
     SiteSensorDescription(
         key="energy_price_current",
         translation_key="energy_price_current",
@@ -439,7 +513,7 @@ class SiteSensor(CoordinatorEntity[FalbygdensEnergiCoordinator], SensorEntity):
         return super().available and self._site() is not None
 
     @property
-    def native_value(self) -> float | datetime | None:
+    def native_value(self) -> float | datetime | str | None:
         """Return the sensor value."""
         site = self._site()
         return self.entity_description.value_fn(site) if site else None
