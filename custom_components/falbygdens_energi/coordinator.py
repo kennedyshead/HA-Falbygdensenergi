@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from homeassistant.components.recorder import get_instance
-from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
+from homeassistant.components.recorder.models import (
+    StatisticData,
+    StatisticMeanType,
+    StatisticMetaData,
+)
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
@@ -51,36 +55,57 @@ HIGHLOAD_MONTHS = {11, 12, 1, 2, 3}
 HIGHLOAD_HOURS = range(7, 19)  # weekdays 07:00–19:00 local
 
 
-def _swedish_holidays(year: int) -> set[date]:
-    """Public holidays plus the eves Falbygdens Energi excludes from high load."""
-    days: set[date] = set()
+type HolidayCalendar = dict[int, set[date]]
+
+
+def fixed_holidays(year: int) -> set[date]:
+    """Fixed-date Swedish holidays plus the eves Falbygdens Energi excludes.
+
+    Cheap and import-free, so safe in the event loop; used until the full
+    calendar has been loaded in the executor (see :func:`load_holidays`).
+    """
+    return {
+        date(year, 1, 1),
+        date(year, 1, 6),
+        date(year, 5, 1),
+        date(year, 6, 6),
+        date(year, 12, 24),
+        date(year, 12, 25),
+        date(year, 12, 26),
+        date(year, 12, 31),
+    }
+
+
+def load_holidays(year: int) -> set[date]:
+    """Full Swedish public holiday calendar for ``year`` plus the excluded eves.
+
+    Imports the ``holidays`` package, which lazily loads country modules, so
+    this must run in an executor, never in the event loop.
+    """
+    days = fixed_holidays(year)
     try:
         import holidays  # noqa: PLC0415
 
         days.update(holidays.Sweden(years=[year], include_sundays=False))
-    except Exception:  # noqa: BLE001 - fall back to the fixed-date ones
-        days.update(
-            {
-                date(year, 1, 1),
-                date(year, 1, 6),
-                date(year, 5, 1),
-                date(year, 6, 6),
-                date(year, 12, 25),
-                date(year, 12, 26),
-            }
-        )
-    days.update({date(year, 12, 24), date(year, 12, 31)})
+    except Exception:  # noqa: BLE001 - the fixed-date set is still usable
+        _LOGGER.debug("holidays package unavailable, using fixed dates for %s", year)
     return days
 
 
-def is_high_load_hour(local: datetime, holidays_: set[date] | None = None) -> bool:
+def holidays_for(calendar_: HolidayCalendar | None, year: int) -> set[date]:
+    """Return the cached calendar for ``year`` or the fixed-date fallback."""
+    if calendar_ and year in calendar_:
+        return calendar_[year]
+    return fixed_holidays(year)
+
+
+def is_high_load_hour(local: datetime, calendar_: HolidayCalendar | None = None) -> bool:
     """True when ``local`` falls in the high-load window (Nov–Mar, weekdays 07–19)."""
     if local.month not in HIGHLOAD_MONTHS or local.weekday() >= 5:
         return False
     if local.hour not in HIGHLOAD_HOURS:
         return False
-    days = holidays_ if holidays_ is not None else _swedish_holidays(local.year)
-    return local.date() not in days
+    return local.date() not in holidays_for(calendar_, local.year)
 
 
 @dataclass(slots=True)
@@ -94,13 +119,14 @@ class TariffHour:
     highload_fee_per_kw: float  # 0 outside the high-load window
 
 
-def tariff_schedule(day: date, tariff: Tariff | None) -> list[TariffHour]:
+def tariff_schedule(
+    day: date, tariff: Tariff | None, calendar_: HolidayCalendar | None = None
+) -> list[TariffHour]:
     """The 24 (or 23/25 on DST days) hours of ``day`` with their tariff period."""
     start = dt_util.start_of_local_day(
         datetime.combine(day, datetime.min.time(), tzinfo=dt_util.get_default_time_zone())
     )
     end = dt_util.start_of_local_day(start + timedelta(days=1, hours=2))
-    holidays_ = _swedish_holidays(day.year)
     energy = (
         round(tariff.transfer_per_kwh + tariff.tax_per_kwh, 4)
         if tariff and tariff.transfer_per_kwh is not None and tariff.tax_per_kwh is not None
@@ -109,7 +135,7 @@ def tariff_schedule(day: date, tariff: Tariff | None) -> list[TariffHour]:
     hours: list[TariffHour] = []
     cur = start
     while cur < end:
-        high = is_high_load_hour(cur, holidays_)
+        high = is_high_load_hour(cur, calendar_)
         hours.append(
             TariffHour(
                 start=cur,
@@ -123,13 +149,15 @@ def tariff_schedule(day: date, tariff: Tariff | None) -> list[TariffHour]:
     return hours
 
 
-def next_period_change(now_local: datetime) -> datetime | None:
+def next_period_change(
+    now_local: datetime, calendar_: HolidayCalendar | None = None
+) -> datetime | None:
     """When the tariff period next flips between normal and high load (within 400 days)."""
-    current = is_high_load_hour(now_local)
+    current = is_high_load_hour(now_local, calendar_)
     probe = now_local.replace(minute=0, second=0, microsecond=0)
     for _ in range(400 * 24):
         probe = dt_util.as_local((probe + timedelta(hours=1)).astimezone(UTC))
-        if is_high_load_hour(probe) != current:
+        if is_high_load_hour(probe, calendar_) != current:
             return probe
     return None
 
@@ -242,6 +270,8 @@ class SiteData:
     profile: HourlyProfile | None = None
     # Hourly points that should go into long-term statistics this refresh.
     statistics_points: list[ConsumptionPoint] = field(default_factory=list)
+    # Holiday calendar (preloaded off the event loop) for the tariff schedule.
+    holidays: HolidayCalendar = field(default_factory=dict)
 
     @property
     def last_invoiced(self) -> InvoicePrice | None:
@@ -298,6 +328,7 @@ class PortalData:
     fetched_at: datetime
     sites: list[SiteData] = field(default_factory=list)
     invoices: InvoiceSummary = field(default_factory=InvoiceSummary)
+    holidays: HolidayCalendar = field(default_factory=dict)
 
 
 def _sum_points(points: list[ConsumptionPoint], start: datetime, end: datetime) -> float | None:
@@ -324,6 +355,7 @@ def compute_month_cost(
     now_local: datetime,
     *,
     cutoff: datetime | None,
+    calendar_: HolidayCalendar | None = None,
 ) -> MonthCost | None:
     """Price the current month from its delivered hourly values.
 
@@ -334,7 +366,7 @@ def compute_month_cost(
     """
     month_start = dt_util.start_of_local_day(now_local).replace(day=1)
     days_in_month = calendar.monthrange(now_local.year, now_local.month)[1]
-    holidays_ = _swedish_holidays(now_local.year)
+    holidays_ = holidays_for(calendar_, now_local.year)
     delivered = [
         p
         for p in points
@@ -419,10 +451,12 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
         )
         self.client = client
         self._statistics_imported: set[str] = set()
+        self._holidays: HolidayCalendar = {}
 
     # ------------------------------------------------------------------ refresh
     async def _async_update_data(self) -> PortalData:
         """Fetch fresh data from the portal."""
+        await self._async_ensure_holidays()
         try:
             version = await self.client.async_get_version()
             tariffs = await self._async_safe_tariffs()
@@ -454,6 +488,7 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
             fetched_at=dt_util.utcnow(),
             sites=sites,
             invoices=InvoiceSummary(invoices),
+            holidays=self._holidays,
         )
 
         for site_data in sites:
@@ -487,13 +522,22 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
 
         midnight = dt_util.start_of_local_day(now_local)
         month_start = midnight.replace(day=1)
-        data = SiteData(site=site, unit=hourly.unit or UnitOfEnergy.KILO_WATT_HOUR, tariff=tariff)
+        data = SiteData(
+            site=site,
+            unit=hourly.unit or UnitOfEnergy.KILO_WATT_HOUR,
+            tariff=tariff,
+            holidays=self._holidays,
+        )
         data.hourly = hourly.points
         data.today = _sum_points(hourly.points, midnight, midnight + timedelta(days=1))
         data.yesterday = _sum_points(hourly.points, midnight - timedelta(days=1), midnight)
         data.last_hour_start = _last_nonzero_hour(hourly.points, dt_util.utcnow())
         data.month_cost = compute_month_cost(
-            hourly.points, tariff, now_local, cutoff=data.last_hour_start
+            hourly.points,
+            tariff,
+            now_local,
+            cutoff=data.last_hour_start,
+            calendar_=self._holidays,
         )
         data.profile = compute_hourly_profile(
             hourly.points, dt_util.utcnow(), cutoff=data.last_hour_start, days=PROFILE_DAYS
@@ -544,6 +588,13 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
             site_data.meter_stand = best.meter_stand
             site_data.meter_stand_date = best.reading_date
             site_data.meter_stand_meter_id = best.meter_id
+
+    async def _async_ensure_holidays(self) -> None:
+        """Load this and next year's holiday calendar off the event loop, once."""
+        year = dt_util.now().year
+        for y in (year - 1, year, year + 1):
+            if y not in self._holidays:
+                self._holidays[y] = await self.hass.async_add_executor_job(load_holidays, y)
 
     async def _async_safe_tariffs(self) -> dict[str, Tariff]:
         try:
@@ -667,7 +718,7 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
             stats.append(StatisticData(start=point.start, state=point.value, sum=round(running, 3)))
 
         metadata = StatisticMetaData(
-            has_mean=False,
+            mean_type=StatisticMeanType.NONE,
             has_sum=True,
             name=f"{site_data.site.name} energy",
             source=DOMAIN,

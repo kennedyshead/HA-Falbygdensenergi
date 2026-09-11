@@ -38,6 +38,7 @@ from .const import (
 from .coordinator import (
     FalbygdensEnergiConfigEntry,
     FalbygdensEnergiCoordinator,
+    HolidayCalendar,
     PortalData,
     SiteData,
     is_high_load_hour,
@@ -137,7 +138,9 @@ def _highload_attrs(site: SiteData) -> dict[str, Any]:
     }
 
 
-def _schedule_attr(site: SiteData, day: date) -> list[dict[str, Any]]:
+def _schedule_attr(
+    site: SiteData, day: date, calendar_: HolidayCalendar | None
+) -> list[dict[str, Any]]:
     return [
         {
             "start": h.start.isoformat(),
@@ -147,14 +150,14 @@ def _schedule_attr(site: SiteData, day: date) -> list[dict[str, Any]]:
             "peak_fee_per_kw": h.peak_fee_per_kw,
             "highload_fee_per_kw": h.highload_fee_per_kw,
         }
-        for h in tariff_schedule(day, site.tariff)
+        for h in tariff_schedule(day, site.tariff, calendar_)
     ]
 
 
-def _tariff_period_attrs(site: SiteData) -> dict[str, Any]:
+def _tariff_period_attrs(site: SiteData, calendar_: HolidayCalendar | None) -> dict[str, Any]:
     now = dt_util.now()
     today = now.date()
-    change = next_period_change(now)
+    change = next_period_change(now, calendar_)
     t = site.tariff
     return {
         "high_load_season": now.month in (11, 12, 1, 2, 3),
@@ -167,8 +170,8 @@ def _tariff_period_attrs(site: SiteData) -> dict[str, Any]:
         ),
         "peak_fee_per_kw": t.peak_per_kw if t else None,
         "highload_fee_per_kw": t.highload_per_kw if t else None,
-        "today": _schedule_attr(site, today),
-        "tomorrow": _schedule_attr(site, today + timedelta(days=1)),
+        "today": _schedule_attr(site, today, calendar_),
+        "tomorrow": _schedule_attr(site, today + timedelta(days=1), calendar_),
     }
 
 
@@ -203,8 +206,10 @@ SITE_SENSORS: tuple[SiteSensorDescription, ...] = (
         device_class=SensorDeviceClass.ENUM,
         options=["normal", "high_load"],
         icon="mdi:clock-alert-outline",
-        value_fn=lambda s: "high_load" if is_high_load_hour(dt_util.now()) else "normal",
-        attributes_fn=_tariff_period_attrs,
+        value_fn=lambda s: (
+            "high_load" if is_high_load_hour(dt_util.now(), s.holidays) else "normal"
+        ),
+        attributes_fn=lambda s: _tariff_period_attrs(s, s.holidays),
     ),
     SiteSensorDescription(
         key="heaviest_hour",
@@ -440,7 +445,11 @@ def _account_device(coordinator: FalbygdensEnergiCoordinator) -> DeviceInfo:
         model="Mina sidor",
         name=entry.title,
         configuration_url=BASE_URL,
-        sw_version=coordinator.client.info.portal_version,
+        sw_version=(
+            str(coordinator.client.info.portal_version)
+            if coordinator.client.info.portal_version
+            else None
+        ),
     )
 
 
