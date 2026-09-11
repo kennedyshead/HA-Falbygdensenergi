@@ -158,10 +158,13 @@ expands `$` inside double quotes; use single quotes there.
 
 ## Brand icon
 
-The icon shown in Home Assistant's integrations page and in HACS comes from
-the [home-assistant/brands](https://github.com/home-assistant/brands)
-repository. The image set is prepared in [`brands/`](brands/) together with
-the submission steps.
+Since Home Assistant 2026.3 the integration ships its own icon and logo in
+`custom_components/falbygdens_energi/brand/`, which Home Assistant serves
+locally on the integrations page and in the device pages. HACS's own
+dashboard still reads icons from the
+[home-assistant/brands](https://github.com/home-assistant/brands)
+repository; the same image set is prepared for that submission in
+[`brands/`](brands/) together with the steps.
 
 ## Development
 
