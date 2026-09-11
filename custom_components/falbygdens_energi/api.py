@@ -243,6 +243,9 @@ class FalbygdensEnergiClient:
         self._login_lock = asyncio.Lock()
         self._logged_in_at: datetime | None = None
         self.info = PortalInfo()
+        # site id -> use place code (the code invoices refer to); filled by
+        # async_get_meter_readings, which is the only place the portal lists it.
+        self.use_place_codes: dict[str, str] = {}
 
     # ------------------------------------------------------------------ helpers
     def _url(self, path: str) -> URL:
@@ -566,6 +569,8 @@ class FalbygdensEnergiClient:
         readings: dict[str, list[MeterReading]] = {}
         for useplace in useplaces:
             useplace_id = str(useplace.get("UsePlaceId"))
+            if code := useplace.get("UsePlaceCode"):
+                self.use_place_codes[useplace_id] = str(code)
             try:
                 utilities = await self.async_page_method(
                     page, "GetUtilities", useplaceId=useplace_id

@@ -137,6 +137,8 @@ class FakePortal:
         self.authenticated = False
         self.calls: list[str] = []
         self.consumption_requests: list[dict] = []
+        self.latest_invoice_date = "2026-09-04"
+        self.previous_invoice_date = "2026-08-10"
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -279,7 +281,7 @@ class FakePortal:
             {
                 "InvoiceId": 1,
                 "InvoiceNumber": "100",
-                "InvoiceDate": "2026-08-10",
+                "InvoiceDate": self.previous_invoice_date,
                 "PresentDueDate": "2026-08-31",
                 "Amount": 1938.0,
                 "RemainingAmount": 0.0,
@@ -290,7 +292,7 @@ class FakePortal:
             {
                 "InvoiceId": 2,
                 "InvoiceNumber": "101",
-                "InvoiceDate": "2026-09-04",
+                "InvoiceDate": self.latest_invoice_date,
                 "PresentDueDate": "2026-09-30",
                 "Amount": 1790.0,
                 "RemainingAmount": 1790.0,

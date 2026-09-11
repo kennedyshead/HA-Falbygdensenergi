@@ -93,6 +93,17 @@ async def test_setup_creates_sensors(recorder_mock, hass: HomeAssistant, portal)
     yesterday = hass.states.get("sensor.testgatan_1_teststad_energy_yesterday")
     assert float(yesterday.state) == pytest.approx(sum(1.0 + h / 100 for h in range(24)), abs=0.01)
     assert hass.states.get("sensor.testgatan_1_teststad_energy_this_month").state == "1009.0"
+    # Latest invoice (2026-09-04, 1790 SEK) covers August: 1000 + 8 = 1008 kWh.
+    price = hass.states.get("sensor.testgatan_1_teststad_energy_price")
+    assert price.state == "1.7758"
+    assert price.attributes["period"] == "2026-08"
+    assert price.attributes["period_energy"] == 1008.0
+    assert price.attributes["invoice_number"] == "101"
+    assert price.attributes["unit_of_measurement"] == "SEK/kWh"
+    # Only the current year's monthly series was needed.
+    assert [m["StartDate"] for m in fake.consumption_requests if m["Interval"] == "MONTH"] == [
+        "2026-01-01"
+    ]
     assert hass.states.get("sensor.testgatan_1_teststad_energy_this_year").state == "9009.0"
     up_to = hass.states.get("sensor.testgatan_1_teststad_data_up_to")
     assert up_to.state == "2026-09-11T07:00:00+00:00"
@@ -133,6 +144,22 @@ async def test_refresh_reuses_sum_and_short_window(
     )
     # Re-importing the same hours must not double count.
     assert second["falbygdens_energi:55782955_energy"][0]["sum"] == pytest.approx(first_sum)
+
+
+async def test_price_uses_previous_year_for_january_invoice(
+    recorder_mock, hass: HomeAssistant, portal
+) -> None:
+    fake, base = portal
+    fake.latest_invoice_date = "2026-01-08"
+    fake.previous_invoice_date = "2025-12-05"
+    entry = await _setup(hass, base)
+    assert entry.state is ConfigEntryState.LOADED
+
+    months = [m["StartDate"] for m in fake.consumption_requests if m["Interval"] == "MONTH"]
+    assert months == ["2026-01-01", "2025-01-01"]
+    price = hass.states.get("sensor.testgatan_1_teststad_energy_price")
+    assert price.attributes["period"] == "2025-12"
+    assert price.state == str(round(1790.0 / 1012.0, 4))
 
 
 async def test_setup_bad_password_triggers_reauth(

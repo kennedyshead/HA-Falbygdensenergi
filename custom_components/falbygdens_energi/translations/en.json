@@ -68,6 +68,9 @@
       },
       "portal_version": {
         "name": "Portal version"
+      },
+      "energy_price": {
+        "name": "Energy price"
       }
     }
   }

@@ -61,6 +61,14 @@ class SiteData:
     meter_stand: float | None = None
     meter_stand_date: datetime | None = None
     meter_stand_meter_id: str | None = None
+    # Month start (local date) -> kWh, for the current and, if needed, previous year.
+    monthly: dict[date, float] = field(default_factory=dict)
+    use_place_code: str | None = None
+    # Effective price of the latest invoice: amount / kWh of the month it covers.
+    price_per_kwh: float | None = None
+    price_invoice: Invoice | None = None
+    price_period: date | None = None
+    price_kwh: float | None = None
 
     @property
     def primary_meter(self) -> MeterInfo | None:
@@ -170,6 +178,11 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
 
         for site_data in sites:
             self._apply_meter_stand(site_data, readings)
+            site_data.use_place_code = self.client.use_place_codes.get(site_data.site.site_id)
+            try:
+                await self._async_apply_price(model, site_data, invoices, len(model.sites))
+            except CannotConnectError as err:
+                _LOGGER.debug("Price for %s unavailable: %s", site_data.site.name, err)
 
         data = PortalData(
             info=self.client.info,
@@ -212,14 +225,11 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
 
         # Month to date from the monthly series (covers the whole month even
         # if the hourly window is shorter), year to date from CompareModel.
-        data.month_to_date = next(
-            (
-                round(p.value, 3)
-                for p in yearly.points
-                if dt_util.as_local(p.start).date() == month_start.date()
-            ),
-            None,
-        )
+        data.monthly = {
+            dt_util.as_local(p.start).date().replace(day=1): round(p.value, 3)
+            for p in yearly.points
+        }
+        data.month_to_date = data.monthly.get(month_start.date())
         data.year_to_date = (
             yearly.current_period_total if yearly.current_period_total is not None else yearly.total
         )
@@ -254,6 +264,58 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
             site_data.meter_stand = best.meter_stand
             site_data.meter_stand_date = best.reading_date
             site_data.meter_stand_meter_id = best.meter_id
+
+    async def _async_apply_price(
+        self,
+        model: ConsumptionModel,
+        site_data: SiteData,
+        invoices: list[Invoice],
+        site_count: int,
+    ) -> None:
+        """Compute SEK/kWh from the latest invoice and the month it covers.
+
+        Invoices are issued early in a month for the previous month's
+        consumption, so the period is the month before the invoice date.
+        Invoices are matched to the site by use place code; with a single
+        site all invoices count.
+        """
+        candidates = [
+            inv
+            for inv in invoices
+            if inv.invoice_date
+            and inv.amount > 0
+            and (
+                site_count == 1
+                or site_data.use_place_code is None
+                or inv.use_place_code == site_data.use_place_code
+            )
+        ]
+        if not candidates:
+            return
+        invoice = max(candidates, key=lambda i: (i.invoice_date, i.invoice_number))
+        assert invoice.invoice_date is not None
+        period = (invoice.invoice_date.replace(day=1) - timedelta(days=1)).replace(day=1)
+
+        if period not in site_data.monthly and period.year not in {
+            d.year for d in site_data.monthly
+        }:
+            previous = await self.client.async_get_consumption(
+                model,
+                site_data.site,
+                date(period.year, 1, 1),
+                date(period.year, 12, 31),
+                Interval.MONTH,
+            )
+            for point in previous.points:
+                key = dt_util.as_local(point.start).date().replace(day=1)
+                site_data.monthly.setdefault(key, round(point.value, 3))
+
+        kwh = site_data.monthly.get(period)
+        site_data.price_invoice = invoice
+        site_data.price_period = period
+        site_data.price_kwh = kwh
+        if kwh:
+            site_data.price_per_kwh = round(invoice.amount / kwh, 4)
 
     # --------------------------------------------------------------- statistics
     @staticmethod

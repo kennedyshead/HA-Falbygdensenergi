@@ -62,6 +62,7 @@ One *service* device for the account and one device per use place (address).
 | `sensor.<address>_energy_this_year` | Year to date |
 | `sensor.<address>_energy_last_year_same_period` | Same period last year (disabled by default) |
 | `sensor.<address>_meter_reading` | Latest meter stand in kWh (`total_increasing`), usually monthly |
+| `sensor.<address>_energy_price` | Effective price in SEK/kWh: newest invoice amount ÷ kWh of the month it covers. Invoice number, amount, period and kWh as attributes. |
 | `sensor.<address>_data_up_to` | Start of the last hour the portal has delivered (diagnostic) |
 
 **Account**

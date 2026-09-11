@@ -59,6 +59,7 @@ class SiteSensorDescription(SensorEntityDescription):
 
     value_fn: Callable[[SiteData], float | datetime | None]
     last_reset_fn: Callable[[SiteData], datetime | None] | None = None
+    attributes_fn: Callable[[SiteData], dict[str, Any]] | None = None
 
 
 def _start_of_today(_: SiteData) -> datetime:
@@ -77,7 +78,28 @@ def _start_of_year(_: SiteData) -> datetime:
     return dt_util.start_of_local_day().replace(month=1, day=1)
 
 
+def _price_attrs(site: SiteData) -> dict[str, Any]:
+    inv = site.price_invoice
+    return {
+        ATTR_INVOICE_NUMBER: inv.invoice_number if inv else None,
+        "invoice_amount": inv.amount if inv else None,
+        "invoice_date": inv.invoice_date.isoformat() if inv and inv.invoice_date else None,
+        "period": site.price_period.strftime("%Y-%m") if site.price_period else None,
+        "period_energy": site.price_kwh,
+    }
+
+
 SITE_SENSORS: tuple[SiteSensorDescription, ...] = (
+    SiteSensorDescription(
+        key="energy_price",
+        translation_key="energy_price",
+        native_unit_of_measurement=f"{CURRENCY_SEK}/{UnitOfEnergy.KILO_WATT_HOUR}",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:cash-multiple",
+        suggested_display_precision=2,
+        value_fn=lambda s: s.price_per_kwh,
+        attributes_fn=_price_attrs,
+    ),
     SiteSensorDescription(
         key="energy_today",
         translation_key="energy_today",
@@ -349,4 +371,6 @@ class SiteSensor(CoordinatorEntity[FalbygdensEnergiCoordinator], SensorEntity):
                 site.meter_stand_date.isoformat() if site.meter_stand_date else None
             )
             attrs[ATTR_METER_ID] = site.meter_stand_meter_id or attrs[ATTR_METER_ID]
+        if self.entity_description.attributes_fn:
+            attrs.update(self.entity_description.attributes_fn(site))
         return attrs

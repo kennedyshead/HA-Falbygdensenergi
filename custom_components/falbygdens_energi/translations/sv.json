@@ -68,6 +68,9 @@
       },
       "portal_version": {
         "name": "Portalversion"
+      },
+      "energy_price": {
+        "name": "Energipris"
       }
     }
   }
