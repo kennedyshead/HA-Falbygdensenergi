@@ -62,7 +62,12 @@ One *service* device for the account and one device per use place (address).
 | `sensor.<address>_energy_this_year` | Year to date |
 | `sensor.<address>_energy_last_year_same_period` | Same period last year (disabled by default) |
 | `sensor.<address>_meter_reading` | Latest meter stand in kWh (`total_increasing`), usually monthly |
-| `sensor.<address>_energy_price` | Effective price in SEK/kWh: newest invoice amount ÷ kWh of the month it covers. Invoice number, amount, period and kWh as attributes. |
+| `sensor.<address>_energy_price_this_month` | Live estimate in SEK/kWh for the current month: grid cost so far ÷ kWh so far. Cost breakdown and the tariff as attributes. |
+| `sensor.<address>_grid_cost_this_month` | Grid cost so far this month in SEK, computed like the invoice (see below) |
+| `sensor.<address>_projected_grid_cost_this_month` | Full-month projection: energy scaled to month end, peak charges as they stand |
+| `sensor.<address>_peak_power_this_month` | Highest hourly average power this month in kW, with `peak_at`. Drives the peak fee. |
+| `sensor.<address>_high_load_peak_this_month` | Highest weekday 07–19 hour November–March in kW. Drives the high-load fee; `unknown` outside the season. |
+| `sensor.<address>_energy_price_last_invoice` | Settled SEK/kWh of the newest invoice: amount ÷ kWh of the month it covers. `history` attribute lists every invoice with period, kWh, amount and price. |
 | `sensor.<address>_data_up_to` | Start of the last hour the portal has delivered (diagnostic) |
 
 **Account**
@@ -74,6 +79,25 @@ One *service* device for the account and one device per use place (address).
 | `sensor.<account>_next_due_date` | Earliest due date among unpaid invoices |
 | `sensor.<account>_last_update` | Timestamp of the last successful poll (diagnostic) |
 | `sensor.<account>_portal_version` | Portal build number, disabled by default (diagnostic) |
+
+### How the grid cost is computed
+
+The tariff is read from your contract on the portal (*Avtal → Priser*), so
+price changes follow automatically. The monthly cost mirrors the invoice
+specification exactly:
+
+| Line | Formula |
+| --- | --- |
+| Abonnemang | yearly fee × days ÷ 365 |
+| Elöverföring | kWh × transfer fee |
+| Energiskatt | kWh × energy tax |
+| Effektavgift | highest single hour of the month (kW) × peak fee |
+| Höglastavgift | November–March: highest weekday 07:00–19:00 hour, public holidays and Christmas/New Year's Eve excluded, × high-load fee |
+
+"So far" uses the hours the portal has delivered (it lags a few hours).
+The invoice uses the monthly meter reading for kWh, which can differ from
+the hourly sum by a few kWh, and reminder fees for late payment are not
+part of the estimate.
 
 ### Energy dashboard
 
@@ -119,6 +143,13 @@ page uses (output in the git-ignored `tools/out/`). Credentials come from
 `.envrc` (`FBE_USERNAME` / `FBE_PASSWORD`, parsed literally so `$` in a
 password is safe) or the command line. Note that sourcing `.envrc` in zsh
 expands `$` inside double quotes; use single quotes there.
+
+## Brand icon
+
+The icon shown in Home Assistant's integrations page and in HACS comes from
+the [home-assistant/brands](https://github.com/home-assistant/brands)
+repository. The image set is prepared in [`brands/`](brands/) together with
+the submission steps.
 
 ## Development
 

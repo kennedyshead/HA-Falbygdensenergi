@@ -69,8 +69,23 @@
       "portal_version": {
         "name": "Portalversion"
       },
-      "energy_price": {
-        "name": "Energipris"
+      "energy_price_current": {
+        "name": "Energipris denna månad"
+      },
+      "grid_cost_month": {
+        "name": "Nätkostnad denna månad"
+      },
+      "grid_cost_projected": {
+        "name": "Beräknad nätkostnad denna månad"
+      },
+      "peak_power_month": {
+        "name": "Högsta effekt denna månad"
+      },
+      "highload_peak_month": {
+        "name": "Höglasteffekt denna månad"
+      },
+      "energy_price_invoiced": {
+        "name": "Energipris senaste faktura"
       }
     }
   }

@@ -13,7 +13,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import EntityCategory, UnitOfEnergy
+from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -78,27 +78,127 @@ def _start_of_year(_: SiteData) -> datetime:
     return dt_util.start_of_local_day().replace(month=1, day=1)
 
 
-def _price_attrs(site: SiteData) -> dict[str, Any]:
-    inv = site.price_invoice
+def _invoiced_attrs(site: SiteData) -> dict[str, Any]:
+    last = site.last_invoiced
     return {
-        ATTR_INVOICE_NUMBER: inv.invoice_number if inv else None,
-        "invoice_amount": inv.amount if inv else None,
-        "invoice_date": inv.invoice_date.isoformat() if inv and inv.invoice_date else None,
-        "period": site.price_period.strftime("%Y-%m") if site.price_period else None,
-        "period_energy": site.price_kwh,
+        "period": last.period.strftime("%Y-%m") if last else None,
+        ATTR_INVOICE_NUMBER: last.invoice.invoice_number if last else None,
+        "invoice_amount": last.invoice.amount if last else None,
+        "period_energy": last.kwh if last else None,
+        "history": [
+            {
+                "period": ip.period.strftime("%Y-%m"),
+                "energy": ip.kwh,
+                "amount": ip.invoice.amount,
+                "price": ip.price_per_kwh,
+                "invoice_date": ip.invoice.invoice_date.isoformat()
+                if ip.invoice.invoice_date
+                else None,
+            }
+            for ip in site.invoiced
+        ],
     }
+
+
+def _month_cost_attrs(site: SiteData) -> dict[str, Any]:
+    mc = site.month_cost
+    if mc is None:
+        return {}
+    t = site.tariff
+    return {
+        "month": mc.month.strftime("%Y-%m"),
+        "days_elapsed": mc.days_elapsed,
+        "hours_delivered": mc.hours_delivered,
+        "energy": mc.kwh,
+        "subscription": mc.subscription,
+        "transfer": mc.transfer,
+        "energy_tax": mc.tax,
+        "peak_fee": mc.peak_fee,
+        "highload_fee": mc.highload_fee,
+        "tariff": t.raw if t else None,
+        "tariff_complete": bool(t and t.complete),
+    }
+
+
+def _peak_attrs(site: SiteData) -> dict[str, Any]:
+    mc = site.month_cost
+    return {"peak_at": mc.peak_at.isoformat() if mc and mc.peak_at else None}
+
+
+def _highload_attrs(site: SiteData) -> dict[str, Any]:
+    mc = site.month_cost
+    return {
+        "peak_at": mc.highload_at.isoformat() if mc and mc.highload_at else None,
+        "in_season": bool(mc and mc.in_highload_season),
+        "season": "November–March, weekdays 07:00–19:00 excluding holidays",
+    }
+
+
+def _start_of_month_cost(_: SiteData) -> datetime:
+    return dt_util.start_of_local_day().replace(day=1)
 
 
 SITE_SENSORS: tuple[SiteSensorDescription, ...] = (
     SiteSensorDescription(
-        key="energy_price",
-        translation_key="energy_price",
+        key="energy_price_current",
+        translation_key="energy_price_current",
+        native_unit_of_measurement=f"{CURRENCY_SEK}/{UnitOfEnergy.KILO_WATT_HOUR}",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:cash-clock",
+        suggested_display_precision=2,
+        value_fn=lambda s: s.month_cost.price_per_kwh if s.month_cost else None,
+        attributes_fn=_month_cost_attrs,
+    ),
+    SiteSensorDescription(
+        key="grid_cost_month",
+        translation_key="grid_cost_month",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=CURRENCY_SEK,
+        suggested_display_precision=0,
+        value_fn=lambda s: (
+            s.month_cost.total if s.month_cost and s.month_cost.price_per_kwh else None
+        ),
+        last_reset_fn=_start_of_month_cost,
+        attributes_fn=_month_cost_attrs,
+    ),
+    SiteSensorDescription(
+        key="grid_cost_projected",
+        translation_key="grid_cost_projected",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement=CURRENCY_SEK,
+        suggested_display_precision=0,
+        value_fn=lambda s: s.month_cost.projected if s.month_cost else None,
+    ),
+    SiteSensorDescription(
+        key="peak_power_month",
+        translation_key="peak_power_month",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        suggested_display_precision=2,
+        value_fn=lambda s: s.month_cost.peak_kw if s.month_cost else None,
+        attributes_fn=_peak_attrs,
+    ),
+    SiteSensorDescription(
+        key="highload_peak_month",
+        translation_key="highload_peak_month",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        suggested_display_precision=2,
+        value_fn=lambda s: s.month_cost.highload_kw if s.month_cost else None,
+        attributes_fn=_highload_attrs,
+    ),
+    SiteSensorDescription(
+        key="energy_price_invoiced",
+        translation_key="energy_price_invoiced",
         native_unit_of_measurement=f"{CURRENCY_SEK}/{UnitOfEnergy.KILO_WATT_HOUR}",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:cash-multiple",
         suggested_display_precision=2,
-        value_fn=lambda s: s.price_per_kwh,
-        attributes_fn=_price_attrs,
+        value_fn=lambda s: s.last_invoiced.price_per_kwh if s.last_invoiced else None,
+        attributes_fn=_invoiced_attrs,
     ),
     SiteSensorDescription(
         key="energy_today",

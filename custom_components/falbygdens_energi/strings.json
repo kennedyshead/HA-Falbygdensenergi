@@ -69,8 +69,23 @@
       "portal_version": {
         "name": "Portal version"
       },
-      "energy_price": {
-        "name": "Energy price"
+      "energy_price_current": {
+        "name": "Energy price this month"
+      },
+      "grid_cost_month": {
+        "name": "Grid cost this month"
+      },
+      "grid_cost_projected": {
+        "name": "Projected grid cost this month"
+      },
+      "peak_power_month": {
+        "name": "Peak power this month"
+      },
+      "highload_peak_month": {
+        "name": "High-load peak this month"
+      },
+      "energy_price_invoiced": {
+        "name": "Energy price last invoice"
       }
     }
   }

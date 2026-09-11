@@ -114,6 +114,25 @@ ONLOAD_RESPONSE = {
     "AvailableUnits": [{"UtilityId": "E", "UnitId": "kWh"}, {"UtilityId": "E", "UnitId": "MWh"}],
 }
 
+CONTRACT = {
+    "ContractId": "1133966412",
+    "UsePlaceId": SITE_ID,
+    "StatusId": "1",
+    "UtilityName": "Elnät - Nätavtal",
+    "UtilityId": "E",
+    "ServiceId": SERVICE_ID,
+    "Prices": None,
+}
+
+TARIFF_PRICES = [
+    {"PriceLabel": "Abonnemang", "PriceVat": "4525,00 kr/år", "PriceNoVat": "3620,00 kr/år"},
+    {"PriceLabel": "Elöverföring", "PriceVat": "37,20 öre/kWh", "PriceNoVat": "29,76 öre/kWh"},
+    {"PriceLabel": "Effektavgift", "PriceVat": "45,00 kr/kW", "PriceNoVat": "36,00 kr/kW"},
+    {"PriceLabel": "Höglastavgift", "PriceVat": "65,00 kr/kW", "PriceNoVat": "52,00 kr/kW"},
+    {"PriceLabel": "Energiskatt", "PriceVat": "45,00 öre/kWh", "PriceNoVat": "36,00 öre/kWh"},
+    {"PriceLabel": "Beräknad årskostnad", "PriceVat": "0,00 kr", "PriceNoVat": "0,00 kr"},
+]
+
 LANDING_HTML = """<html><head>
 <meta name="Portal-Version" content="CPU.Client.Web.dll [13.0.26138.52557] [IsDebug=False]" />
 <meta name="Portal-CustomerId" content="12345" />
@@ -165,7 +184,41 @@ class FakePortal:
             "/Consumption/HistoricalMeterReadings.aspx/GetMeterReadings", self.meter_readings
         )
         app.router.add_post("/Start.aspx/GetInvoices", self.invoices)
+        app.router.add_get("/contract/contracts.aspx", self.landing)
+        app.router.add_post("/Contract/Contracts.aspx/GetLocalSettings", self.local_settings)
+        app.router.add_post("/Contract/Contracts.aspx/GetUseplaces", self.contract_useplaces)
+        app.router.add_post("/Contract/Contracts.aspx/GetContractDetails", self.contract_details)
+        app.router.add_post(
+            "/Contract/Contracts.aspx/GetContractsAddtionalInformation", self.contract_info
+        )
         return app
+
+    # -------------------------------------------------------------- contracts
+    async def local_settings(self, request: web.Request) -> web.Response:
+        if denied := self._check(request):
+            return denied
+        return web.json_response({"d": {"IsPrivatePerson": True, "IsLegalEntity": False}})
+
+    async def contract_useplaces(self, request: web.Request) -> web.Response:
+        if denied := self._check(request):
+            return denied
+        return web.json_response(
+            {"d": [{"FullAddress": "Testgatan 1, TESTSTAD", "UseplaceIds": SITE_ID}]}
+        )
+
+    async def contract_details(self, request: web.Request) -> web.Response:
+        if denied := self._check(request):
+            return denied
+        body = await request.json()
+        assert body == {"usePlaces": [SITE_ID]}
+        return web.json_response({"d": [CONTRACT]})
+
+    async def contract_info(self, request: web.Request) -> web.Response:
+        if denied := self._check(request):
+            return denied
+        body = await request.json()
+        assert json.loads(body["selectedcontract"]) == CONTRACT  # sent as a JSON string
+        return web.json_response({"d": {**CONTRACT, "Prices": TARIFF_PRICES}})
 
     # ------------------------------------------------------------ data pages
     def _hourly_value(self, start: datetime) -> float:

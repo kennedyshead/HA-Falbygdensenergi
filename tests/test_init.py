@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import aiohttp
@@ -94,16 +94,56 @@ async def test_setup_creates_sensors(recorder_mock, hass: HomeAssistant, portal)
     assert float(yesterday.state) == pytest.approx(sum(1.0 + h / 100 for h in range(24)), abs=0.01)
     assert hass.states.get("sensor.testgatan_1_teststad_energy_this_month").state == "1009.0"
     # Latest invoice (2026-09-04, 1790 SEK) covers August: 1000 + 8 = 1008 kWh.
-    price = hass.states.get("sensor.testgatan_1_teststad_energy_price")
+    price = hass.states.get("sensor.testgatan_1_teststad_energy_price_last_invoice")
     assert price.state == "1.7758"
     assert price.attributes["period"] == "2026-08"
     assert price.attributes["period_energy"] == 1008.0
     assert price.attributes["invoice_number"] == "101"
     assert price.attributes["unit_of_measurement"] == "SEK/kWh"
+    history = price.attributes["history"]
+    assert [h["period"] for h in history] == ["2026-08", "2026-07"]
+    assert history[1] == {
+        "period": "2026-07",
+        "energy": 1007.0,
+        "amount": 1938.0,
+        "price": round(1938.0 / 1007.0, 4),
+        "invoice_date": "2026-08-10",
+    }
     # Only the current year's monthly series was needed.
     assert [m["StartDate"] for m in fake.consumption_requests if m["Interval"] == "MONTH"] == [
         "2026-01-01"
     ]
+
+    # Current month cost, mirroring the invoice formula on the fake's hourly values.
+    # Delivered hours: Sept 1 00:00 local (Aug 31 22:00 UTC) .. FAKE_NOW - 3h.
+    hours = []
+    cur = datetime(2026, 8, 31, 22, tzinfo=UTC)
+    while cur <= FAKE_NOW - timedelta(hours=3):
+        hours.append(fake._hourly_value(cur))
+        cur += timedelta(hours=1)
+    kwh = round(sum(hours), 3)
+    peak = max(hours)  # 1.23 kW (UTC hour 23)
+    subscription = round(4525 * 11 / 365, 2)
+    total = round(
+        subscription + round(kwh * 0.372, 2) + round(kwh * 0.45, 2) + round(peak * 45, 2), 2
+    )
+    cost = hass.states.get("sensor.testgatan_1_teststad_grid_cost_this_month")
+    assert float(cost.state) == pytest.approx(total)
+    assert cost.attributes["energy"] == kwh
+    assert cost.attributes["hours_delivered"] == len(hours)
+    assert cost.attributes["highload_fee"] == 0.0
+    assert cost.attributes["tariff"]["Effektavgift"] == "45,00 kr/kW"
+    assert cost.attributes["tariff_complete"] is True
+    price_now = hass.states.get("sensor.testgatan_1_teststad_energy_price_this_month")
+    assert float(price_now.state) == pytest.approx(round(total / kwh, 4))
+    peak_state = hass.states.get("sensor.testgatan_1_teststad_peak_power_this_month")
+    assert float(peak_state.state) == pytest.approx(peak)
+    assert peak_state.attributes["peak_at"].endswith("23:00:00+00:00")
+    assert (
+        hass.states.get("sensor.testgatan_1_teststad_high_load_peak_this_month").state == "unknown"
+    )
+    projected = hass.states.get("sensor.testgatan_1_teststad_projected_grid_cost_this_month")
+    assert float(projected.state) > total
     assert hass.states.get("sensor.testgatan_1_teststad_energy_this_year").state == "9009.0"
     up_to = hass.states.get("sensor.testgatan_1_teststad_data_up_to")
     assert up_to.state == "2026-09-11T07:00:00+00:00"
@@ -138,7 +178,8 @@ async def test_refresh_reuses_sum_and_short_window(
 
     hourly = [m for m in fake.consumption_requests if m["Interval"] == "HOUR"]
     assert len(hourly) == 2
-    assert hourly[1]["StartDate"] == "2026-09-08"  # 3-day refresh window
+    # 3-day refresh window, widened to the start of the month for the cost estimate.
+    assert hourly[1]["StartDate"] == "2026-09-01"
     second = await get_instance(hass).async_add_executor_job(
         get_last_statistics, hass, 1, "falbygdens_energi:55782955_energy", True, {"sum"}
     )
@@ -157,7 +198,7 @@ async def test_price_uses_previous_year_for_january_invoice(
 
     months = [m["StartDate"] for m in fake.consumption_requests if m["Interval"] == "MONTH"]
     assert months == ["2026-01-01", "2025-01-01"]
-    price = hass.states.get("sensor.testgatan_1_teststad_energy_price")
+    price = hass.states.get("sensor.testgatan_1_teststad_energy_price_last_invoice")
     assert price.attributes["period"] == "2025-12"
     assert price.state == str(round(1790.0 / 1012.0, 4))
 

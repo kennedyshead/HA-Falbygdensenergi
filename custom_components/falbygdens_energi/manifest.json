@@ -15,6 +15,8 @@
   "loggers": [
     "custom_components.falbygdens_energi"
   ],
-  "requirements": [],
-  "version": "0.2.0"
+  "requirements": [
+    "holidays>=0.100"
+  ],
+  "version": "0.3.0"
 }

@@ -216,6 +216,79 @@ class Invoice:
 
 
 @dataclass(slots=True)
+class Tariff:
+    """Grid tariff for one contract, in SEK (VAT included for private customers).
+
+    Falbygdens Energi's Normaltaxa has five components; the invoice computes
+    subscription × days/365, energy × (transfer + tax), highest hour × peak
+    fee and, November–March, highest weekday 07–19 hour × high-load fee.
+    """
+
+    subscription_per_year: float | None = None
+    transfer_per_kwh: float | None = None
+    tax_per_kwh: float | None = None
+    peak_per_kw: float | None = None
+    highload_per_kw: float | None = None
+    contract_name: str | None = None
+    includes_vat: bool = True
+    raw: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def complete(self) -> bool:
+        """True when everything needed to price a month is known."""
+        return None not in (
+            self.subscription_per_year,
+            self.transfer_per_kwh,
+            self.tax_per_kwh,
+            self.peak_per_kw,
+        )
+
+
+_PRICE_RE = re.compile(r"(-?\d[\d\s]*(?:[.,]\d+)?)\s*(kr|öre|sek)\s*/\s*(år|mån|kwh|kw)", re.I)
+
+# Portal price labels -> Tariff fields.
+_PRICE_FIELDS = {
+    "abonnemang": "subscription_per_year",
+    "elöverföring": "transfer_per_kwh",
+    "överföring": "transfer_per_kwh",
+    "effektavgift": "peak_per_kw",
+    "höglastavgift": "highload_per_kw",
+    "energiskatt": "tax_per_kwh",
+}
+
+
+def parse_price(text: str) -> tuple[float, str] | None:
+    """Parse ``"37,20 öre/kWh"`` → ``(0.372, "kwh")`` (value in SEK per unit).
+
+    ``kr/mån`` is converted to SEK per year so subscriptions compare directly.
+    """
+    if not (m := _PRICE_RE.search(text or "")):
+        return None
+    number = float(m.group(1).replace(" ", "").replace(",", "."))
+    if m.group(2).lower() == "öre":
+        number /= 100
+    unit = m.group(3).lower()
+    if unit == "mån":
+        return round(number * 12, 6), "år"
+    return round(number, 6), unit
+
+
+def parse_tariff(prices: list[dict[str, Any]], *, include_vat: bool = True) -> Tariff:
+    """Build a Tariff from the ``Prices`` list of a contract."""
+    tariff = Tariff(includes_vat=include_vat)
+    key = "PriceVat" if include_vat else "PriceNoVat"
+    for row in prices or []:
+        label = str(row.get("PriceLabel") or "").strip()
+        text = str(row.get(key) or "")
+        tariff.raw[label] = text
+        field_name = _PRICE_FIELDS.get(label.lower())
+        if not field_name or not (parsed := parse_price(text)):
+            continue
+        setattr(tariff, field_name, parsed[0])
+    return tariff
+
+
+@dataclass(slots=True)
 class ConsumptionModel:
     """The server's view model for the consumption page plus the sites it lists."""
 
@@ -635,6 +708,44 @@ class FalbygdensEnergiClient:
         invoices.sort(key=lambda i: (i.invoice_date or date.min, i.invoice_number), reverse=True)
         return invoices
 
+    async def async_get_tariffs(self) -> dict[str, Tariff]:
+        """Return the electricity grid tariff per site id from the contracts page.
+
+        Call order mirrors the page: page → GetLocalSettings → GetUseplaces →
+        GetContractDetails(usePlaces) → GetContractsAddtionalInformation for
+        each contract, which is where the price list lives.
+        """
+        page = "Contract/Contracts.aspx"
+        await self.async_get_page("contract/contracts.aspx")
+        settings = await self.async_page_method(page, "GetLocalSettings") or {}
+        include_vat = not bool(settings.get("IsLegalEntity"))
+        useplaces = await self.async_page_method(page, "GetUseplaces") or []
+        ids: list[str] = []
+        for up in useplaces:
+            ids.extend(str(up.get("UseplaceIds") or "").split(","))
+        ids = [i.strip() for i in ids if i.strip()]
+        if not ids:
+            return {}
+        contracts = await self.async_page_method(page, "GetContractDetails", usePlaces=ids) or []
+
+        tariffs: dict[str, Tariff] = {}
+        for contract in contracts:
+            if str(contract.get("UtilityId")) != "E" or str(contract.get("StatusId")) != "1":
+                continue
+            site_id = str(contract.get("UsePlaceId"))
+            try:
+                # The server wants the contract object as a JSON *string*.
+                details = await self.async_page_method(
+                    page, "GetContractsAddtionalInformation", selectedcontract=json.dumps(contract)
+                )
+            except CannotConnectError as err:
+                _LOGGER.debug("Contract details unavailable for %s: %s", site_id, err)
+                continue
+            tariff = parse_tariff((details or {}).get("Prices") or [], include_vat=include_vat)
+            tariff.contract_name = contract.get("UtilityName")
+            tariffs[site_id] = tariff
+        return tariffs
+
     # ---------------------------------------------------------------- discovery
     async def async_discover(self) -> dict[str, Any]:
         """Crawl the authenticated pages and list every API endpoint they use.
@@ -722,7 +833,10 @@ __all__ = [
     "PasswordLoginDisabledError",
     "PortalInfo",
     "Site",
+    "Tariff",
     "TwoFactorRequiredError",
     "parse_ms_date",
     "parse_portal_datetime",
+    "parse_price",
+    "parse_tariff",
 ]
