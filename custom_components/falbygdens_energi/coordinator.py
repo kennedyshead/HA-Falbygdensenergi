@@ -24,6 +24,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import EnergyConverter
 
 from .api import (
     AuthenticationError,
@@ -733,6 +734,11 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
             name=f"{site_data.site.name} energy",
             source=DOMAIN,
             statistic_id=statistic_id,
+            unit_class=(
+                EnergyConverter.UNIT_CLASS
+                if site_data.unit in EnergyConverter.VALID_UNITS
+                else None
+            ),
             unit_of_measurement=site_data.unit,
         )
         async_add_external_statistics(self.hass, metadata, stats)
