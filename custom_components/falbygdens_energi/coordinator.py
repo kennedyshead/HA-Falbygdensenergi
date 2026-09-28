@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import calendar
 import logging
+import time
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
@@ -31,6 +34,7 @@ from .api import (
     CannotConnectError,
     ConsumptionModel,
     ConsumptionPoint,
+    ConsumptionResult,
     FalbygdensEnergiClient,
     Interval,
     Invoice,
@@ -462,22 +466,74 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
         )
         self.client = client
         self._statistics_imported: set[str] = set()
+        self._statistics_enabled = False
+        self._statistics_lock = asyncio.Lock()
+        self._statistics_tasks: set[asyncio.Task[None]] = set()
         self._holidays: HolidayCalendar = {}
+        self._holiday_task: asyncio.Task[None] | None = None
+
+    def async_start_holiday_loading(self) -> None:
+        """Begin local holiday loading while the portal login is in progress."""
+        if self._holiday_task is None:
+            self._holiday_task = self.hass.async_create_task(
+                self._async_ensure_holidays(), f"{DOMAIN} holiday loading"
+            )
+
+    def async_start_statistics_import(self) -> None:
+        """Allow completed refreshes to import statistics in the background."""
+        self._statistics_enabled = True
+        if self.data is not None:
+            self._async_schedule_statistics_import(self.data)
+
+    async def async_shutdown(self) -> None:
+        """Stop integration-owned work before the config entry is unloaded."""
+        tasks = set(self._statistics_tasks)
+        if self._holiday_task is not None and not self._holiday_task.done():
+            tasks.add(self._holiday_task)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def async_wait_for_statistics_import(self) -> None:
+        """Wait for pending imports; used by tests and orderly shutdown callers."""
+        while self._statistics_tasks:
+            await asyncio.gather(*tuple(self._statistics_tasks), return_exceptions=True)
 
     # ------------------------------------------------------------------ refresh
     async def _async_update_data(self) -> PortalData:
         """Fetch fresh data from the portal."""
-        await self._async_ensure_holidays()
+        refresh_start = time.monotonic()
+        requests_before = self.client.request_count
+        if self._holiday_task is not None:
+            await self._holiday_task
+        else:
+            await self._async_ensure_holidays()
         try:
-            version = await self.client.async_get_version()
-            tariffs = await self._async_safe_tariffs()
-            model = await self.client.async_load_consumption_model()
+            # Login reads this from the landing page. Keep the endpoint as a
+            # fallback for portals that omit or change that metadata.
+            version = self.client.info.portal_version
+            if version is None:
+                version_response = await self._async_timed(
+                    "version", self.client.async_get_version()
+                )
+                version = (
+                    version_response.get("FileVersionServer")
+                    if isinstance(version_response, dict)
+                    else None
+                )
+            else:
+                _LOGGER.debug("Portal version reused from login landing metadata (0 requests)")
+            tariffs = await self._async_timed("tariffs", self._async_safe_tariffs())
+            model = await self._async_timed(
+                "consumption model", self.client.async_load_consumption_model()
+            )
             sites = [
                 await self._async_fetch_site(model, site, tariffs.get(site.site_id))
                 for site in model.sites
             ]
-            readings = await self._async_safe_meter_readings()
-            invoices = await self._async_safe_invoices()
+            readings = await self._async_timed("meter readings", self._async_safe_meter_readings())
+            invoices = await self._async_timed("invoices", self._async_safe_invoices())
         except AuthenticationError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except CannotConnectError as err:
@@ -487,28 +543,45 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
             self._apply_meter_stand(site_data, readings)
             site_data.use_place_code = self.client.use_place_codes.get(site_data.site.site_id)
             try:
-                await self._async_apply_invoiced_prices(
-                    model, site_data, invoices, len(model.sites)
+                await self._async_timed(
+                    f"historical invoice enrichment for {site_data.site.site_id}",
+                    self._async_apply_invoiced_prices(model, site_data, invoices, len(model.sites)),
                 )
             except CannotConnectError as err:
                 _LOGGER.debug("Invoice prices for %s unavailable: %s", site_data.site.name, err)
 
         data = PortalData(
             info=self.client.info,
-            portal_version=version.get("FileVersionServer") if isinstance(version, dict) else None,
+            portal_version=version,
             fetched_at=dt_util.utcnow(),
             sites=sites,
             invoices=InvoiceSummary(invoices),
             holidays=self._holidays,
         )
 
-        for site_data in sites:
-            try:
-                await self._async_import_statistics(site_data)
-            except Exception:  # noqa: BLE001 - statistics must never break the sensors
-                _LOGGER.exception("Importing statistics for %s failed", site_data.site.name)
+        if self._statistics_enabled:
+            self._async_schedule_statistics_import(data)
+
+        _LOGGER.debug(
+            "Portal refresh completed in %.3fs (%d requests)",
+            time.monotonic() - refresh_start,
+            self.client.request_count - requests_before,
+        )
 
         return data
+
+    async def _async_timed(self, operation: str, awaitable: Awaitable[object]) -> object:
+        """Await an operation and log its elapsed time and request count."""
+        start = time.monotonic()
+        requests_before = self.client.request_count
+        result = await awaitable
+        _LOGGER.debug(
+            "%s completed in %.3fs (%d requests)",
+            operation,
+            time.monotonic() - start,
+            self.client.request_count - requests_before,
+        )
+        return result
 
     async def _async_fetch_site(
         self, model: ConsumptionModel, site: Site, tariff: Tariff | None
@@ -524,12 +597,18 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
             today.replace(day=1),
         )
 
-        hourly = await self.client.async_get_consumption(
-            model, site, hourly_start, today, Interval.HOUR
+        hourly = await self._async_timed(
+            f"hourly consumption for {site.site_id}",
+            self.client.async_get_consumption(model, site, hourly_start, today, Interval.HOUR),
         )
-        yearly = await self.client.async_get_consumption(
-            model, site, date(today.year, 1, 1), date(today.year, 12, 31), Interval.MONTH
+        yearly = await self._async_timed(
+            f"monthly consumption for {site.site_id}",
+            self.client.async_get_consumption(
+                model, site, date(today.year, 1, 1), date(today.year, 12, 31), Interval.MONTH
+            ),
         )
+        assert isinstance(hourly, ConsumptionResult)
+        assert isinstance(yearly, ConsumptionResult)
 
         midnight = dt_util.start_of_local_day(now_local)
         month_start = midnight.replace(day=1)
@@ -602,10 +681,12 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
 
     async def _async_ensure_holidays(self) -> None:
         """Load this and next year's holiday calendar off the event loop, once."""
+        start = time.monotonic()
         year = dt_util.now().year
         for y in (year - 1, year, year + 1):
             if y not in self._holidays:
                 self._holidays[y] = await self.hass.async_add_executor_job(load_holidays, y)
+        _LOGGER.debug("Holiday calendar loading completed in %.3fs", time.monotonic() - start)
 
     async def _async_safe_tariffs(self) -> dict[str, Tariff]:
         try:
@@ -670,6 +751,30 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
         )
 
     # --------------------------------------------------------------- statistics
+    def _async_schedule_statistics_import(self, data: PortalData) -> None:
+        """Queue a stable completed refresh for background statistics import."""
+        start = time.monotonic()
+        snapshot = tuple(data.sites)
+        task = self.hass.async_create_background_task(
+            self._async_import_statistics_snapshot(snapshot, start),
+            f"{DOMAIN} statistics import",
+        )
+        self._statistics_tasks.add(task)
+        task.add_done_callback(self._statistics_tasks.discard)
+        _LOGGER.debug("Statistics import prepared for %d sites", len(snapshot))
+
+    async def _async_import_statistics_snapshot(
+        self, sites: tuple[SiteData, ...], start: float
+    ) -> None:
+        """Import one refresh snapshot without blocking config-entry setup."""
+        async with self._statistics_lock:
+            for site_data in sites:
+                try:
+                    await self._async_import_statistics(site_data)
+                except Exception:  # noqa: BLE001 - statistics must never break the sensors
+                    _LOGGER.exception("Importing statistics for %s failed", site_data.site.name)
+        _LOGGER.debug("Statistics import completed in %.3fs", time.monotonic() - start)
+
     @staticmethod
     def _statistic_id(site: Site) -> str:
         meter = next((m for m in site.meters if m.is_hourly), None) or (
@@ -684,6 +789,7 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
         Rows are keyed by hour start, so re-importing the last days each
         refresh silently corrects values the portal delivered late.
         """
+        start = time.monotonic()
         if not site_data.statistics_points:
             return
         statistic_id = self._statistic_id(site_data.site)
@@ -744,9 +850,10 @@ class FalbygdensEnergiCoordinator(DataUpdateCoordinator[PortalData]):
         async_add_external_statistics(self.hass, metadata, stats)
         self._statistics_imported.add(statistic_id)
         _LOGGER.debug(
-            "Imported %d hourly statistics for %s (%s → %s)",
+            "Imported %d hourly statistics for %s (%s → %s) in %.3fs",
             len(stats),
             statistic_id,
             points[0].start,
             points[-1].start,
+            time.monotonic() - start,
         )

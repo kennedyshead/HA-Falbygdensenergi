@@ -15,6 +15,7 @@ import copy
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from enum import IntEnum
@@ -315,6 +316,7 @@ class FalbygdensEnergiClient:
         self._base = URL(base_url.rstrip("/") + "/")
         self._login_lock = asyncio.Lock()
         self._logged_in_at: datetime | None = None
+        self._request_count = 0
         self.info = PortalInfo()
         # site id -> use place code (the code invoices refer to); filled by
         # async_get_meter_readings, which is the only place the portal lists it.
@@ -330,6 +332,11 @@ class FalbygdensEnergiClient:
         return (
             self._logged_in_at is not None and datetime.now() - self._logged_in_at < SESSION_TIMEOUT
         )
+
+    @property
+    def request_count(self) -> int:
+        """Return the number of portal HTTP requests made by this client."""
+        return self._request_count
 
     @staticmethod
     def _unwrap(payload: Any) -> Any:
@@ -352,6 +359,7 @@ class FalbygdensEnergiClient:
     async def async_get_startup_settings(self) -> dict[str, str]:
         """Return the public start-up settings as a flat ``name -> value`` dict."""
         try:
+            self._request_count += 1
             async with self._session.get(
                 self._url("api/settings/startupsettings"), timeout=DEFAULT_TIMEOUT
             ) as resp:
@@ -370,6 +378,8 @@ class FalbygdensEnergiClient:
         rejects the credentials or requires an interactive step.
         """
         async with self._login_lock:
+            start = time.monotonic()
+            requests_before = self.request_count
             self._logged_in_at = None
             settings = await self.async_get_startup_settings()
             if settings.get("DisableUserPassLogin", "False").lower() == "true":
@@ -379,10 +389,12 @@ class FalbygdensEnergiClient:
 
             try:
                 # Priming GET: sets ASP.NET_SessionId and pfu_lang cookies.
+                self._request_count += 1
                 async with self._session.get(
                     self._url("default.aspx"), timeout=DEFAULT_TIMEOUT
                 ) as resp:
                     resp.raise_for_status()
+                self._request_count += 1
                 async with self._session.post(
                     self._url("default.aspx/Authenticate"),
                     json={"user": self._username, "password": self._password, "captcha": ""},
@@ -422,6 +434,11 @@ class FalbygdensEnergiClient:
             _LOGGER.debug("Logged in to portal, status=%s landing=%s", status.name, landing)
 
             await self._async_load_portal_info()
+            _LOGGER.debug(
+                "Portal login completed in %.3fs (%d requests)",
+                time.monotonic() - start,
+                self.request_count - requests_before,
+            )
             return self.info
 
     async def _async_load_portal_info(self) -> None:
@@ -462,6 +479,7 @@ class FalbygdensEnergiClient:
         headers = {"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"}
         headers.update(kwargs.pop("headers", {}))
         try:
+            self._request_count += 1
             async with self._session.request(
                 method, self._url(path), headers=headers, **kwargs
             ) as resp:
@@ -488,6 +506,7 @@ class FalbygdensEnergiClient:
         await self.async_ensure_login()
         url = URL(url_or_path) if "://" in url_or_path else self._url(url_or_path)
         try:
+            self._request_count += 1
             async with self._session.get(url, timeout=DEFAULT_TIMEOUT) as resp:
                 resp.raise_for_status()
                 self._logged_in_at = datetime.now()

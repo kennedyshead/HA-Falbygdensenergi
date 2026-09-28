@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -18,7 +19,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 )
 
 from custom_components.falbygdens_energi.const import DOMAIN
-from tests.conftest import FAKE_NOW
+from tests.conftest import FAKE_NOW, LANDING_HTML
 
 
 async def _setup(hass: HomeAssistant, base: str, password: str = "secret") -> MockConfigEntry:
@@ -57,7 +58,7 @@ async def test_setup_creates_sensors(recorder_mock, hass: HomeAssistant, portal)
     entry = await _setup(hass, base)
 
     assert entry.state is ConfigEntryState.LOADED
-    assert "version" in fake.calls
+    assert "version" not in fake.calls
     assert fake.calls.count("onload") == 1
     # First run backfills 30 days of hourly data plus the monthly series.
     hourly = [m for m in fake.consumption_requests if m["Interval"] == "HOUR"]
@@ -180,6 +181,7 @@ async def test_setup_creates_sensors(recorder_mock, hass: HomeAssistant, portal)
     assert up_to.state == "2026-09-11T07:00:00+00:00"
 
     # Long-term statistics were imported under the meter id.
+    await entry.runtime_data.async_wait_for_statistics_import()
     await async_wait_recording_done(hass)
     stats = await get_instance(hass).async_add_executor_job(
         get_last_statistics, hass, 1, "falbygdens_energi:55782955_energy", True, {"sum", "state"}
@@ -197,6 +199,7 @@ async def test_refresh_reuses_sum_and_short_window(
 ) -> None:
     fake, base = portal
     entry = await _setup(hass, base)
+    await entry.runtime_data.async_wait_for_statistics_import()
     await async_wait_recording_done(hass)
     first = await get_instance(hass).async_add_executor_job(
         get_last_statistics, hass, 1, "falbygdens_energi:55782955_energy", True, {"sum"}
@@ -205,6 +208,7 @@ async def test_refresh_reuses_sum_and_short_window(
 
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
+    await entry.runtime_data.async_wait_for_statistics_import()
     await async_wait_recording_done(hass)
 
     hourly = [m for m in fake.consumption_requests if m["Interval"] == "HOUR"]
@@ -243,3 +247,50 @@ async def test_setup_bad_password_triggers_reauth(
     assert entry.state is ConfigEntryState.SETUP_ERROR
     flows = hass.config_entries.flow.async_progress()
     assert any(f["context"].get("source") == "reauth" for f in flows)
+
+
+async def test_setup_uses_version_endpoint_when_landing_metadata_is_missing(
+    recorder_mock, hass: HomeAssistant, portal
+) -> None:
+    """Keep the version endpoint fallback for portals without Portal-Version."""
+    fake, base = portal
+    version_meta = (
+        '<meta name="Portal-Version" '
+        'content="CPU.Client.Web.dll [13.0.26138.52557] [IsDebug=False]" />\n'
+    )
+    fake.landing_html = LANDING_HTML.replace(version_meta, "")
+
+    entry = await _setup(hass, base)
+
+    assert "version" in fake.calls
+    assert entry.runtime_data.data.portal_version == "13.0.26138.52557"
+    await entry.runtime_data.async_wait_for_statistics_import()
+
+
+async def test_sensors_are_available_while_statistics_import_runs(
+    recorder_mock, hass: HomeAssistant, portal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Statistics must not hold up entity setup or leave a task after unload."""
+    _, base = portal
+    started = asyncio.Event()
+
+    async def _slow_import(self, site_data) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "custom_components.falbygdens_energi.coordinator.FalbygdensEnergiCoordinator._async_import_statistics",
+        _slow_import,
+    )
+
+    entry = await _setup(hass, base)
+    await started.wait()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.states.get("sensor.testgatan_1_teststad_energy_today") is not None
+    assert entry.runtime_data._statistics_tasks
+
+    coordinator = entry.runtime_data
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert not coordinator._statistics_tasks

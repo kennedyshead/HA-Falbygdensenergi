@@ -158,6 +158,7 @@ class FakePortal:
         self.consumption_requests: list[dict] = []
         self.latest_invoice_date = "2026-09-04"
         self.previous_invoice_date = "2026-08-10"
+        self.landing_html = LANDING_HTML
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -403,7 +404,7 @@ class FakePortal:
     async def landing(self, request: web.Request) -> web.Response:
         if denied := self._check(request):
             return denied
-        return web.Response(text=LANDING_HTML, content_type="text/html")
+        return web.Response(text=self.landing_html, content_type="text/html")
 
     async def meters(self, request: web.Request) -> web.Response:
         if denied := self._check(request):
