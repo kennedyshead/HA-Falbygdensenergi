@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import aiohttp
 import pytest
+from yarl import URL
 
 from custom_components.falbygdens_energi.api import (
     AccountLockedError,
     AuthenticationError,
+    CannotConnectError,
     CaptchaRequiredError,
     FalbygdensEnergiClient,
     TwoFactorRequiredError,
@@ -39,6 +41,49 @@ async def test_login_wrong_password(portal) -> None:
     session, client = _client(base, pw="nope")
     async with session:
         with pytest.raises(AuthenticationError):
+            await client.async_login()
+        assert not client.is_logged_in
+
+
+@pytest.mark.parametrize(
+    "landing",
+    [
+        "~/start.aspx?return=a%2Fb&lang=sv",
+        "/start.aspx?return=a%2Fb&lang=sv",
+        "start.aspx?return=a%2Fb&lang=sv",
+        "https://127.0.0.1:444/start.aspx?return=a%2Fb&lang=sv",
+        "http://127.0.0.1:444/start.aspx?return=a%2Fb&lang=sv",
+        "//127.0.0.1:444/start.aspx?return=a%2Fb&lang=sv",
+    ],
+)
+async def test_login_keeps_landing_on_configured_origin(portal, landing) -> None:
+    fake, base = portal
+    fake.landing_url = landing
+    session, client = _client(base)
+    async with session:
+        info = await client.async_login()
+        assert info.customer_id == "12345"
+        assert info.landing_url == str(URL(base).join(URL("/start.aspx?return=a%2Fb&lang=sv")))
+        assert URL(info.landing_url).origin() == URL(base).origin()
+        assert client.is_logged_in
+        assert await client.async_request("GET", "api/consumption/meters") == [{"MeterId": "1"}]
+
+
+@pytest.mark.parametrize(
+    ("landing", "message"),
+    [
+        ("https://other.example/start.aspx", "different host"),
+        ("//other.example/start.aspx", "different host"),
+        ("ftp://127.0.0.1/start.aspx", "non-HTTP"),
+        ("https://127.0.0.1:invalid/start.aspx", "invalid landing URL"),
+    ],
+)
+async def test_login_rejects_unsafe_landing_url(portal, landing, message) -> None:
+    fake, base = portal
+    fake.landing_url = landing
+    session, client = _client(base)
+    async with session:
+        with pytest.raises(CannotConnectError, match=message):
             await client.async_login()
         assert not client.is_logged_in
 

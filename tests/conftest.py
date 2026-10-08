@@ -159,6 +159,7 @@ class FakePortal:
         self.latest_invoice_date = "2026-09-04"
         self.previous_invoice_date = "2026-08-10"
         self.landing_html = LANDING_HTML
+        self.landing_url = "~/start.aspx"
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -382,7 +383,7 @@ class FakePortal:
             status = 1
         ok = status in (0, 4, 5, 6)
         self.authenticated = ok
-        inner = {"Result": ok, "LoginResultStatus": status, "Url": "~/start.aspx" if ok else ""}
+        inner = {"Result": ok, "LoginResultStatus": status, "Url": self.landing_url if ok else ""}
         resp = web.json_response({"d": json.dumps(inner)})
         if ok:
             resp.set_cookie(".PORTALAUTH", "token")

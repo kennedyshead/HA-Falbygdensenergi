@@ -326,6 +326,22 @@ class FalbygdensEnergiClient:
     def _url(self, path: str) -> URL:
         return self._base.join(URL(path.lstrip("/")))
 
+    def _landing_url(self, path: str) -> URL:
+        """Keep post-login navigation on the configured portal origin."""
+        try:
+            url = URL(path.removeprefix("~/"))
+        except ValueError as err:
+            raise CannotConnectError("Portal returned an invalid landing URL") from err
+        if url.scheme and url.scheme not in ("http", "https"):
+            raise CannotConnectError("Portal returned a non-HTTP landing URL")
+        if url.host is not None and url.host != self._base.host:
+            raise CannotConnectError("Portal returned a landing URL for a different host")
+        # Behind its HTTPS proxy, the portal can advertise an inaccessible
+        # backend port (444). Preserve the path/query, not that origin.
+        if url.absolute:
+            url = url.relative()
+        return self._base.join(url)
+
     @property
     def is_logged_in(self) -> bool:
         """Return True if we have a session that is unlikely to have expired."""
@@ -428,9 +444,9 @@ class FalbygdensEnergiClient:
             if status not in _SUCCESS_STATUSES or not result.get("Result"):
                 raise AuthenticationError("Wrong user name or password")
 
+            landing = str(result.get("Url") or "start.aspx")
+            self.info.landing_url = str(self._landing_url(landing))
             self._logged_in_at = datetime.now()
-            landing = str(result.get("Url") or "start.aspx").lstrip("~/")
-            self.info.landing_url = str(self._url(landing))
             _LOGGER.debug("Logged in to portal, status=%s landing=%s", status.name, landing)
 
             await self._async_load_portal_info()
